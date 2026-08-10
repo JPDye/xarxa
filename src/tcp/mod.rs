@@ -10005,7 +10005,7 @@ mod test {
     /// |    8500    |   (lost) |        |        |        |        |        |        |
     /// +------------+----------+--------+--------+--------+--------+--------+--------+
     ///
-    /// Now, the 4th, 2nd and  6th (not specified in RFC test case) s egments are
+    /// Now, the 4th, 2nd and 6th (not specified in RFC test case) segments are
     /// received:
     ///
     ///                          +-----------------+-----------------+-----------------+
@@ -10174,7 +10174,7 @@ mod test {
     /// |    6000    |   5500   |  6000  |  6500  |  7000  |  7500  |  8000  |  9000  |
     /// +------------+----------+--------+--------+--------+--------+--------+--------+
     ///
-    /// A pure ACK from the transmitter now arrives. It carries no data and  has a
+    /// A pure ACK from the transmitter now arrives. It carries no data and has a
     /// sequence number of 9000, right on the edge of the data held by the assembler.
     ///
     ///                          +-----------------+-----------------+-----------------+
@@ -10472,7 +10472,7 @@ mod test {
 
     /// Case:
     /// One island is held, so every outgoing ACK carries one SACK block. The socket
-    /// then gets one MSS of data top send.
+    /// then gets one MSS of data to send.
     ///
     /// Outcome:
     /// The data should be split into two segments, due to the length of the options.
@@ -10539,7 +10539,7 @@ mod test {
     /// socket and a zero window probe is sent.
     ///
     /// Outcome:
-    /// The zerow window probe carries the previously annoucned SACK range.
+    /// The zero window probe carries the previously annoucned SACK range.
     #[test]
     fn test_sack_emitted_on_zero_window_probe() {
         let mut s = socket_established_with_buffer_sizes(64, 128);
@@ -10676,7 +10676,7 @@ mod test {
     /// +--------------+--------+--------+--------+--------+--------+--------+--------+
     ///
     /// Outcome:
-    /// Four islans shuoldbe held within the assembler, but only three blocks reported
+    /// Four islands should be held within the assembler, but only three blocks reported
     /// in the order that they were received. When segment 1 is received and advances
     /// the left edge, SACK ranges should now contain that fourth island.
     #[test]
@@ -10710,7 +10710,7 @@ mod test {
 
         assert_eq!(s.assembler.iter_data().count(), 4);
 
-        // Advancing the left edge should remove one island and let another be reported:w
+        // Advancing the left edge should remove one island and let another be reported
         send!(
             s,
             TcpRepr {
