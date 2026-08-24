@@ -527,6 +527,7 @@ pub(crate) struct TcpSocketState {
     /// The receive window scaling factor for remotes which support RFC 1323, None if unsupported.
     remote_win_scale: Option<u8>,
     /// Whether or not the remote supports selective ACK as described in RFC 2018.
+    #[cfg(feature = "tcp-sack")]
     remote_has_sack: bool,
     /// The maximum number of data octets that the remote side may receive.
     remote_mss: usize,
@@ -538,6 +539,7 @@ pub(crate) struct TcpSocketState {
     /// The timestamp of the last packet received.
     remote_last_ts: Option<Instant>,
     /// The sequence number of the last packet received, used for sACK
+    #[cfg(feature = "tcp-sack")]
     local_rx_last_seq: Option<TcpSeqNumber>,
     /// The ACK number of the last packet received.
     local_rx_last_ack: Option<TcpSeqNumber>,
@@ -559,10 +561,8 @@ pub(crate) struct TcpSocketState {
     /// Nagle's Algorithm enabled.
     nagle: bool,
 
-    /// Whether we use selective acknowledgements (RFC 2018). When disabled, we neither
-    /// advertise the SACK-permitted option on SYN / SYN|ACK nor emit SACK ranges.
-    sack_enabled: bool,
     /// The last three SACK ranges that were sent to the remote.
+    #[cfg(feature = "tcp-sack")]
     local_sack_history: [Option<(TcpSeqNumber, TcpSeqNumber)>; 3],
 
     /// The congestion control algorithm.
@@ -637,11 +637,13 @@ impl TcpSocketState {
             remote_win_len: 0,
             remote_win_shift: rx_cap_log2.saturating_sub(16) as u8,
             remote_win_scale: None,
+            #[cfg(feature = "tcp-sack")]
             remote_has_sack: false,
             remote_mss: DEFAULT_MSS,
             ip_mtu: DEFAULT_IP_MTU,
             remote_last_ts: None,
             local_rx_last_ack: None,
+            #[cfg(feature = "tcp-sack")]
             local_rx_last_seq: None,
             local_rx_dup_acks: 0,
             pending_fast_retransmit: false,
@@ -649,7 +651,7 @@ impl TcpSocketState {
             ack_delay_timer: AckDelayTimer::Idle,
             challenge_ack_timer: Instant::from_secs(0),
             nagle: true,
-            sack_enabled: true,
+            #[cfg(feature = "tcp-sack")]
             local_sack_history: [None, None, None],
             #[cfg(feature = "tcp-socket-timestamps")]
             timestamps: false,
@@ -708,7 +710,10 @@ impl TcpSocketState {
             self.icmp_error = None;
         }
         self.local_seq_no = TcpSeqNumber::default();
-        self.local_rx_last_seq = None;
+        #[cfg(feature = "tcp-sack")]
+        {
+            self.local_rx_last_seq = None;
+        }
         self.local_rx_last_ack = None;
         self.local_rx_dup_acks = 0;
         self.pending_fast_retransmit = false;
@@ -718,7 +723,10 @@ impl TcpSocketState {
         self.remote_last_win = 0;
         self.remote_win_len = 0;
         self.remote_win_scale = None;
-        self.remote_has_sack = false;
+        #[cfg(feature = "tcp-sack")]
+        {
+            self.remote_has_sack = false;
+        }
         self.remote_win_shift = rx_cap_log2.saturating_sub(16) as u8;
         self.remote_mss = DEFAULT_MSS;
         self.ip_mtu = DEFAULT_IP_MTU;
@@ -729,7 +737,10 @@ impl TcpSocketState {
         }
         self.ack_delay_timer = AckDelayTimer::Idle;
         self.challenge_ack_timer = Instant::from_secs(0);
-        self.local_sack_history = [None, None, None];
+        #[cfg(feature = "tcp-sack")]
+        {
+            self.local_sack_history = [None, None, None];
+        }
 
         #[cfg(feature = "async")]
         {
@@ -794,7 +805,9 @@ impl TcpSocketState {
             window_len: 0,
             window_scale: None,
             max_seg_size: None,
+            #[cfg(feature = "tcp-sack")]
             sack_permitted: false,
+            #[cfg(feature = "tcp-sack")]
             sack_ranges: [None, None, None],
             #[cfg(feature = "tcp-socket-timestamps")]
             timestamp: None,
@@ -857,7 +870,8 @@ impl TcpSocketState {
 
         // If the remote supports selective acknowledgement, add the option to the outgoing
         // segment.
-        if self.remote_has_sack && self.sack_enabled {
+        #[cfg(feature = "tcp-sack")]
+        if self.remote_has_sack {
             debug!("sending sACK option with current assembler ranges");
 
             let ack = reply_repr.ack_number.unwrap_or(TcpSeqNumber(0));
@@ -1227,7 +1241,10 @@ impl TcpSocketState {
                 self.remote_seq_no = repr.seq_number + 1;
                 self.remote_last_seq = self.local_seq_no + 1;
                 self.remote_last_ack = Some(repr.seq_number);
-                self.remote_has_sack = repr.sack_permitted;
+                #[cfg(feature = "tcp-sack")]
+                {
+                    self.remote_has_sack = repr.sack_permitted;
+                }
                 self.remote_win_scale = repr.window_scale;
                 // Remote doesn't support window scaling, don't do it.
                 if self.remote_win_scale.is_none() {
@@ -1464,7 +1481,10 @@ impl TcpSocketState {
         };
 
         // assembler accepted segment, track sequence number for SACK generation
-        self.local_rx_last_seq = Some(repr.seq_number);
+        #[cfg(feature = "tcp-sack")]
+        {
+            self.local_rx_last_seq = Some(repr.seq_number);
+        }
 
         // Place payload octets into the buffer.
         trace!(
@@ -1557,13 +1577,16 @@ impl TcpSocketState {
         let local_mss = self.ip_mtu - ip_header_len - TCP_HEADER_LEN;
 
         #[cfg(feature = "tcp-socket-timestamps")]
-        let mut options_len = if self.timestamps { 10 } else { 0 };
+        let mut options_len: usize = if self.timestamps { 10 } else { 0 };
         #[cfg(not(feature = "tcp-socket-timestamps"))]
-        let mut options_len = 0;
+        let mut options_len: usize = 0;
 
-        let sack_blocks = self.sack_range_count();
-        if sack_blocks > 0 {
-            options_len += sack_blocks * 8 + 2;
+        #[cfg(feature = "tcp-sack")]
+        {
+            let sack_blocks = self.sack_range_count();
+            if sack_blocks > 0 {
+                options_len += sack_blocks * 8 + 2;
+            }
         }
         // Options are padded to a multiple of four bytes on the wire.
         options_len = options_len.next_multiple_of(4);
@@ -1680,8 +1703,9 @@ impl TcpSocketState {
     ///
     /// Matches count of what `generate_sack_ranges()` generates, as SACK ranges
     ///  are filled with extra ranges from assembler if history is small.
+    #[cfg(feature = "tcp-sack")]
     fn sack_range_count(&self) -> usize {
-        if self.remote_has_sack && self.sack_enabled {
+        if self.remote_has_sack {
             self.assembler.iter_data().take(3).count()
         } else {
             0
@@ -1694,6 +1718,7 @@ impl TcpSocketState {
     /// First block contains the triggering island (if it forms an island).
     /// Subsequent blocks are filled from history, and then from the assembler.
     /// Blocks are mapped into the current islands before reporting them.
+    #[cfg(feature = "tcp-sack")]
     fn generate_sack_ranges(&mut self, ack: TcpSeqNumber) -> [Option<(u32, u32)>; 3] {
         if self.assembler.is_empty() {
             self.local_sack_history = [None, None, None];
@@ -1892,7 +1917,9 @@ impl TcpSocketState {
             window_len: self.scaled_window(),
             window_scale: None,
             max_seg_size: None,
+            #[cfg(feature = "tcp-sack")]
             sack_permitted: false,
+            #[cfg(feature = "tcp-sack")]
             sack_ranges: [None, None, None],
             #[cfg(feature = "tcp-socket-timestamps")]
             timestamp: self.timestamp_repr(cx.now(), self.last_remote_tsval),
@@ -1901,11 +1928,11 @@ impl TcpSocketState {
 
         // We fill blocks before payload sizing to ensure the options header length
         // is taken into account.
+        #[cfg(feature = "tcp-sack")]
         match self.state {
             State::Closed | State::SynSent | State::SynReceived => {}
             _ => {
                 if self.remote_has_sack
-                    && self.sack_enabled
                     && let Some(ack) = repr.ack_number
                 {
                     repr.sack_ranges = self.generate_sack_ranges(ack);
@@ -1932,9 +1959,15 @@ impl TcpSocketState {
                 if self.state == State::SynSent {
                     repr.ack_number = None;
                     repr.window_scale = Some(self.remote_win_shift);
-                    repr.sack_permitted = self.sack_enabled;
+                    #[cfg(feature = "tcp-sack")]
+                    {
+                        repr.sack_permitted = true;
+                    }
                 } else {
-                    repr.sack_permitted = self.remote_has_sack && self.sack_enabled;
+                    #[cfg(feature = "tcp-sack")]
+                    {
+                        repr.sack_permitted = self.remote_has_sack;
+                    }
                     repr.window_scale = self.remote_win_scale.map(|_| self.remote_win_shift);
                 }
             }
@@ -2334,13 +2367,6 @@ impl TcpSocket<'_> {
         self.inner().nagle
     }
 
-    /// Return whether selective acknowledgements (RFC 2018) are enabled.
-    ///
-    /// See also the [set_sack_enabled](#method.set_sack_enabled) method.
-    pub fn sack_enabled(&self) -> bool {
-        self.inner().sack_enabled
-    }
-
     /// Set the timeout duration.
     ///
     /// A socket with a timeout duration set will abort the connection if either of the following
@@ -2377,16 +2403,6 @@ impl TcpSocket<'_> {
     /// has ACK delay enabled.
     pub fn set_nagle_enabled(&mut self, enabled: bool) {
         self.inner_mut().nagle = enabled
-    }
-
-    /// Enable or disable selective acknowledgements (SACK, RFC 2018).
-    ///
-    /// By default, SACK is enabled. When enabled, the socket advertises the SACK-permitted
-    /// option on the SYN it sends (and mirrors the peer's on a SYN|ACK), and emits SACK ranges
-    /// for out-of-order data. When disabled, the socket does neither, so the connection falls
-    /// back to cumulative ACKs only.
-    pub fn set_sack_enabled(&mut self, enabled: bool) {
-        self.inner_mut().sack_enabled = enabled
     }
 
     /// Return the keep-alive interval.
@@ -2928,7 +2944,9 @@ mod test {
         window_len: 256,
         window_scale: None,
         max_seg_size: None,
+        #[cfg(feature = "tcp-sack")]
         sack_permitted: false,
+        #[cfg(feature = "tcp-sack")]
         sack_ranges: [None, None, None],
         #[cfg(feature = "tcp-socket-timestamps")]
         timestamp: None,
@@ -2943,7 +2961,9 @@ mod test {
         window_len: 64,
         window_scale: None,
         max_seg_size: None,
+        #[cfg(feature = "tcp-sack")]
         sack_permitted: false,
+        #[cfg(feature = "tcp-sack")]
         sack_ranges: [None, None, None],
         #[cfg(feature = "tcp-socket-timestamps")]
         timestamp: None,
@@ -3808,6 +3828,7 @@ mod test {
                 ack_number: None,
                 max_seg_size: Some(BASE_MSS),
                 window_scale: Some(0),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 #[cfg(feature = "tcp-socket-timestamps")]
                 timestamp: Some(TcpTimestampRepr::new(0, 0)),
@@ -3841,6 +3862,7 @@ mod test {
                 ack_number: None,
                 max_seg_size: Some(BASE_MSS),
                 window_scale: Some(0),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 #[cfg(feature = "tcp-socket-timestamps")]
                 timestamp: Some(TcpTimestampRepr::new(0, 0)),
@@ -3875,6 +3897,7 @@ mod test {
                 ack_number: None,
                 max_seg_size: Some(BASE_MSS),
                 window_scale: Some(0),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 #[cfg(feature = "tcp-socket-timestamps")]
                 timestamp: Some(TcpTimestampRepr::new(0, 0)),
@@ -3896,62 +3919,10 @@ mod test {
         assert_eq!(s.remote_mss, DEFAULT_MSS);
     }
 
-    #[test]
-    fn test_connect_sack_disabled() {
-        let mut s = socket();
-        s.local_seq_no = LOCAL_SEQ;
-        s.view().set_sack_enabled(false);
-        s.view().connect(REMOTE_END, LOCAL_END.port).unwrap();
-
-        // The SYN must not carry the SACK-permitted option.
-        recv!(
-            s,
-            [TcpRepr {
-                control: TcpControl::Syn,
-                seq_number: LOCAL_SEQ,
-                ack_number: None,
-                max_seg_size: Some(BASE_MSS),
-                window_scale: Some(0),
-                sack_permitted: false,
-                #[cfg(feature = "tcp-socket-timestamps")]
-                timestamp: Some(TcpTimestampRepr::new(0, 0)),
-                ..RECV_TEMPL
-            }]
-        );
-
-        // Ensure a poorly behaved remote adding a SACK option when we haven't,
-        // cannot cause us to send SACK ranges.
-        send!(
-            s,
-            TcpRepr {
-                control: TcpControl::Syn,
-                seq_number: REMOTE_SEQ,
-                ack_number: Some(LOCAL_SEQ + 1),
-                max_seg_size: Some(BASE_MSS - 80),
-                window_scale: Some(0),
-                sack_permitted: true,
-                ..SEND_TEMPL
-            }
-        );
-
-        assert!(s.remote_has_sack);
-
-        recv!(
-            s,
-            [TcpRepr {
-                seq_number: LOCAL_SEQ + 1,
-                ack_number: Some(REMOTE_SEQ + 1),
-                ..RECV_TEMPL
-            }]
-        );
-
-        assert_eq!(s.state, State::Established);
-        sack_ranges_are_never_emitted(&mut s);
-    }
-
     /// RFC 2018: If the data receiver has not received a SACK-Permitted option
     /// for a given connection, it MUST NOT send SACK options on that connection.
     #[test]
+    #[cfg(feature = "tcp-sack")]
     fn test_connect_sack_not_offered_by_remote() {
         let mut s = socket_syn_sent();
         recv!(
@@ -3982,7 +3953,6 @@ mod test {
         );
 
         assert!(!s.remote_has_sack);
-        assert!(s.view().sack_enabled());
 
         recv!(
             s,
@@ -3997,49 +3967,15 @@ mod test {
         sack_ranges_are_never_emitted(&mut s);
     }
 
-    #[test]
-    fn test_syn_received_sack_disabled() {
-        let mut s = socket_syn_received();
-        s.view().set_sack_enabled(false);
-
-        // Ensure the remote offering SACK results when we do not, cannot
-        // cause us to send SACK ranges.
-        s.remote_has_sack = true;
-
-        recv!(
-            s,
-            [TcpRepr {
-                control: TcpControl::Syn,
-                seq_number: LOCAL_SEQ,
-                ack_number: Some(REMOTE_SEQ + 1),
-                max_seg_size: Some(BASE_MSS),
-                sack_permitted: false,
-                ..RECV_TEMPL
-            }]
-        );
-
-        send!(
-            s,
-            TcpRepr {
-                seq_number: REMOTE_SEQ + 1,
-                ack_number: Some(LOCAL_SEQ + 1),
-                ..SEND_TEMPL
-            }
-        );
-
-        assert_eq!(s.state, State::Established);
-        sack_ranges_are_never_emitted(&mut s);
-    }
-
     /// RFC 2018: If the data receiver has not received a SACK-Permitted option
     /// for a given connection, it MUST NOT send SACK options on that connection.
     #[test]
+    #[cfg(feature = "tcp-sack")]
     fn test_syn_received_sack_not_offered_by_remote() {
         let mut s = socket_syn_received();
 
         // Ensure the remote not sending SACK results in SACK options not being sent.
         assert!(!s.remote_has_sack);
-        assert!(s.view().sack_enabled());
         recv!(
             s,
             [TcpRepr {
@@ -4066,6 +4002,7 @@ mod test {
 
     // Ensure that SACK ranges are not attached to ACKs after receiving out of
     // order segments. These segment should exist within the assembler however.
+    #[cfg(feature = "tcp-sack")]
     fn sack_ranges_are_never_emitted(mut s: &mut TestSocket) {
         for offset in [6, 18] {
             send!(
@@ -4201,6 +4138,7 @@ mod test {
                 ack_number: None,
                 max_seg_size: Some(BASE_MSS),
                 window_scale: Some(0),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4240,6 +4178,7 @@ mod test {
                 ack_number: None,
                 max_seg_size: Some(BASE_MSS),
                 window_scale: Some(0),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4312,6 +4251,7 @@ mod test {
                 ack_number: None,
                 max_seg_size: Some(BASE_MSS),
                 window_scale: Some(0),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4348,6 +4288,7 @@ mod test {
                 ack_number: None,
                 max_seg_size: Some(BASE_MSS),
                 window_scale: Some(0),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4436,6 +4377,7 @@ mod test {
                 ack_number: None,
                 max_seg_size: Some(BASE_MSS),
                 window_scale: Some(0),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4466,6 +4408,7 @@ mod test {
                 ack_number: None,
                 max_seg_size: Some(BASE_MSS),
                 window_scale: Some(0),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4502,6 +4445,7 @@ mod test {
                 ack_number: None,
                 max_seg_size: Some(BASE_MSS),
                 window_scale: Some(0),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4535,6 +4479,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "tcp-sack")]
     fn test_syn_sent_sack_option() {
         let mut s = socket_syn_sent();
         recv!(
@@ -4620,6 +4565,7 @@ mod test {
                     max_seg_size: Some(BASE_MSS),
                     window_scale: Some(*shift_amt),
                     window_len: u16::try_from(*buffer_size).unwrap_or(u16::MAX),
+                    #[cfg(feature = "tcp-sack")]
                     sack_permitted: true,
                     #[cfg(feature = "tcp-socket-timestamps")]
                     timestamp: Some(TcpTimestampRepr::new(0, 0)),
@@ -4642,6 +4588,7 @@ mod test {
                 // scaling does NOT apply to the window value in SYN packets
                 window_len: 65535,
                 window_scale: Some(5),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4676,6 +4623,7 @@ mod test {
                 ack_number: None,
                 max_seg_size: Some(BASE_MSS),
                 window_scale: Some(0),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -4779,6 +4727,7 @@ mod test {
     /// Outcome:
     /// The SACK ranges are reported correctly with no overflow.
     #[test]
+    #[cfg(feature = "tcp-sack")]
     fn test_established_sack_no_overflow_on_near_max_seqnumber() {
         let mut s = socket_established();
         s.remote_has_sack = true;
@@ -5428,6 +5377,7 @@ mod test {
                 ack_number: None,
                 max_seg_size: Some(MTU_MSS as u16),
                 window_scale: Some(0),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 ..RECV_TEMPL
             }]
@@ -5495,6 +5445,7 @@ mod test {
                 ack_number: None,
                 max_seg_size: Some(BASE_MSS),
                 window_scale: Some(0),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 timestamp: Some(TcpTimestampRepr::new(0, 0)),
                 ..RECV_TEMPL
@@ -6603,8 +6554,11 @@ mod test {
     #[test]
     fn test_reset_clears_connection_state() {
         let mut s = socket_established();
-        s.remote_has_sack = true;
-        s.local_rx_last_seq = Some(TcpSeqNumber(42));
+        #[cfg(feature = "tcp-sack")]
+        {
+            s.remote_has_sack = true;
+            s.local_rx_last_seq = Some(TcpSeqNumber(42));
+        }
         s.local_rx_last_ack = Some(TcpSeqNumber(42));
         s.local_rx_dup_acks = 2;
         s.pending_fast_retransmit = true;
@@ -6615,8 +6569,11 @@ mod test {
 
         s.reset();
 
-        assert!(!s.remote_has_sack);
-        assert_eq!(s.local_rx_last_seq, None);
+        #[cfg(feature = "tcp-sack")]
+        {
+            assert!(!s.remote_has_sack);
+            assert_eq!(s.local_rx_last_seq, None);
+        }
         assert_eq!(s.local_rx_last_ack, None);
         assert_eq!(s.local_rx_dup_acks, 0);
         assert!(!s.pending_fast_retransmit);
@@ -8652,6 +8609,7 @@ mod test {
             ack_number: None,
             max_seg_size: Some(BASE_MSS),
             window_scale: Some(0),
+            #[cfg(feature = "tcp-sack")]
             sack_permitted: true,
             #[cfg(feature = "tcp-socket-timestamps")]
             timestamp: Some(TcpTimestampRepr::new(150, 0)),
@@ -9794,6 +9752,7 @@ mod test {
                 ack_number: None,
                 max_seg_size: Some(BASE_MSS),
                 window_scale: Some(0),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 timestamp: Some(TcpTimestampRepr::new(0, 0)),
                 ..RECV_TEMPL
@@ -9841,6 +9800,7 @@ mod test {
                 ack_number: None,
                 max_seg_size: Some(BASE_MSS),
                 window_scale: Some(0),
+                #[cfg(feature = "tcp-sack")]
                 sack_permitted: true,
                 timestamp: Some(TcpTimestampRepr::new(0, 0)),
                 ..RECV_TEMPL
@@ -9877,6 +9837,7 @@ mod test {
     // =========================================================================================//
 
     /// Creates a SACK range from segment's left and right edges.
+    #[cfg(feature = "tcp-sack")]
     fn block(left: usize, right: usize) -> Option<(u32, u32)> {
         Some(((REMOTE_SEQ + 1 + left).0 as u32, (REMOTE_SEQ + 1 + right).0 as u32))
     }
@@ -9885,11 +9846,13 @@ mod test {
     ///
     /// RFC 2018: Assume the left window edge is 5000 and that the data transmitter sends [...]
     /// segments, each containing 500 data bytes.
+    #[cfg(feature = "tcp-sack")]
     fn setup_rfc2018_cases() -> (TestSocket, Vec<u8>) {
         setup_rfc2018_cases_with_rx_buffer(4000)
     }
 
     /// As `setup_rfc2018_cases()`, with the receive buffer size chosen by the caller.
+    #[cfg(feature = "tcp-sack")]
     fn setup_rfc2018_cases_with_rx_buffer(rx_len: usize) -> (TestSocket, Vec<u8>) {
         let mut s = socket_established_with_buffer_sizes(4000, rx_len);
         s.remote_has_sack = true;
@@ -9959,6 +9922,7 @@ mod test {
     /// |    8500     |    5000     |     5500      |      9000      |
     /// +-------------+-------------+---------------+----------------+
     #[test]
+    #[cfg(feature = "tcp-sack")]
     fn test_sack_rfc2018_case_2() {
         let (mut s, segment) = setup_rfc2018_cases();
 
@@ -10018,6 +9982,7 @@ mod test {
     /// |    7500    |   8500   |        |        |        |        |        |        |
     /// +------------+----------+--------+--------+--------+--------+--------+--------+
     #[test]
+    #[cfg(feature = "tcp-sack")]
     fn test_sack_rfc2018_case_3() {
         let (mut s, segment) = setup_rfc2018_cases();
 
@@ -10185,6 +10150,7 @@ mod test {
     /// | (pure ACK) |   5500   |  6000  |  6500  |  7000  |  7500  |  8000  |  9000  |
     /// +------------+----------+--------+--------+--------+--------+--------+--------+
     #[test]
+    #[cfg(feature = "tcp-sack")]
     fn test_sack_not_affected_by_pure_ack() {
         let (mut s, segment) = setup_rfc2018_cases_with_rx_buffer(5000);
 
@@ -10346,6 +10312,7 @@ mod test {
     /// | (pure ACK) |   5500   |  6000  |  6500  |  7000  |  7500  |  8000  |  9000  |
     /// +------------+----------+--------+--------+--------+--------+--------+--------+
     #[test]
+    #[cfg(feature = "tcp-sack")]
     fn test_sack_not_affected_by_reordered_pure_ack() {
         let (mut s, segment) = setup_rfc2018_cases_with_rx_buffer(5000);
 
@@ -10480,6 +10447,7 @@ mod test {
     /// option length being 12 - TS + SACK (one block) - the remainder should also
     /// be 12.
     #[test]
+    #[cfg(feature = "tcp-sack")]
     fn test_sack_emitted_on_data_segments() {
         const REMOTE_MSS: usize = 128;
         const ONE_BLOCK_OPTS: usize = 12;
@@ -10541,6 +10509,7 @@ mod test {
     /// Outcome:
     /// The zero window probe carries the previously annoucned SACK range.
     #[test]
+    #[cfg(feature = "tcp-sack")]
     fn test_sack_emitted_on_zero_window_probe() {
         let mut s = socket_established_with_buffer_sizes(64, 128);
         s.remote_has_sack = true;
@@ -10601,6 +10570,7 @@ mod test {
     /// contain a SACK block and the window advertised should not include the bytes
     /// from the out-of-order segment.
     #[test]
+    #[cfg(feature = "tcp-sack")]
     fn test_sack_emitted_on_window_update() {
         let mut s = socket_established_with_buffer_sizes(64, 128);
         s.remote_has_sack = true;
@@ -10680,6 +10650,7 @@ mod test {
     /// in the order that they were received. When segment 1 is received and advances
     /// the left edge, SACK ranges should now contain that fourth island.
     #[test]
+    #[cfg(feature = "tcp-sack")]
     fn test_sack_reports_three_of_four_islands() {
         let (mut s, segment) = setup_rfc2018_cases_with_rx_buffer(5000);
 
@@ -10756,6 +10727,7 @@ mod test {
     /// |  6500..6501  |  5000  |  6000  |  7001  |        |        |
     /// +--------------+--------+--------+--------+--------+--------+
     #[test]
+    #[cfg(feature = "tcp-sack")]
     fn test_sack_is_an_exclusive_range() {
         let (mut s, segment) = setup_rfc2018_cases();
 
@@ -10856,6 +10828,7 @@ mod test {
     /// |  transmit  |   5500   |  9000  |  9500  |  8000  |  8500  |  7000  |  7500  |
     /// +------------+----------+--------+--------+--------+--------+--------+--------+
     #[test]
+    #[cfg(feature = "tcp-sack")]
     fn test_sack_works_when_assembler_rejects_segment() {
         // The window must stay wide enough that segment 10000 is still inside it,
         // so the assembler turns it away rather than the window check.
@@ -11042,7 +11015,9 @@ mod stack_test {
         window_len: 1024,
         window_scale: None,
         max_seg_size: None,
+        #[cfg(feature = "tcp-sack")]
         sack_permitted: false,
+        #[cfg(feature = "tcp-sack")]
         sack_ranges: [None, None, None],
         #[cfg(feature = "tcp-socket-timestamps")]
         timestamp: None,

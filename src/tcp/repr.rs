@@ -21,7 +21,9 @@ pub(crate) struct TcpRepr<'a> {
     pub window_len: u16,
     pub window_scale: Option<u8>,
     pub max_seg_size: Option<u16>,
+    #[cfg(feature = "tcp-sack")]
     pub sack_permitted: bool,
+    #[cfg(feature = "tcp-sack")]
     pub sack_ranges: [Option<(u32, u32)>; 3],
     #[cfg(feature = "tcp-socket-timestamps")]
     pub timestamp: Option<TcpTimestampRepr>,
@@ -82,7 +84,9 @@ impl<'a> TcpRepr<'a> {
         let mut max_seg_size = None;
         let mut window_scale = None;
         let mut options = packet.options();
+        #[cfg(feature = "tcp-sack")]
         let mut sack_permitted = false;
+        #[cfg(feature = "tcp-sack")]
         let mut sack_ranges = [None, None, None];
         #[cfg(feature = "tcp-socket-timestamps")]
         let mut timestamp = None;
@@ -110,7 +114,9 @@ impl<'a> TcpRepr<'a> {
                         Some(value)
                     };
                 }
+                #[cfg(feature = "tcp-sack")]
                 TcpOption::SackPermitted => sack_permitted = true,
+                #[cfg(feature = "tcp-sack")]
                 TcpOption::SackRange(slice) => sack_ranges = slice,
                 #[cfg(feature = "tcp-socket-timestamps")]
                 TcpOption::TimeStamp { tsval, tsecr } => {
@@ -130,7 +136,9 @@ impl<'a> TcpRepr<'a> {
             window_len: packet.window_len(),
             window_scale,
             max_seg_size,
+            #[cfg(feature = "tcp-sack")]
             sack_permitted,
+            #[cfg(feature = "tcp-sack")]
             sack_ranges,
             #[cfg(feature = "tcp-socket-timestamps")]
             timestamp,
@@ -150,6 +158,7 @@ impl<'a> TcpRepr<'a> {
         if self.window_scale.is_some() {
             length += 3
         }
+        #[cfg(feature = "tcp-sack")]
         if self.sack_permitted {
             length += 2;
         }
@@ -157,9 +166,12 @@ impl<'a> TcpRepr<'a> {
         if self.timestamp.is_some() {
             length += 10;
         }
-        let sack_range_len: usize = self.sack_ranges.iter().map(|o| o.map(|_| 8).unwrap_or(0)).sum();
-        if sack_range_len > 0 {
-            length += sack_range_len + 2;
+        #[cfg(feature = "tcp-sack")]
+        {
+            let sack_range_len: usize = self.sack_ranges.iter().map(|o| o.map(|_| 8).unwrap_or(0)).sum();
+            if sack_range_len > 0 {
+                length += sack_range_len + 2;
+            }
         }
         if !length.is_multiple_of(4) {
             length += 4 - length % 4;
@@ -202,6 +214,7 @@ impl<'a> TcpRepr<'a> {
                 let tmp = options;
                 options = TcpOption::WindowScale(value).emit(tmp);
             }
+            #[cfg(feature = "tcp-sack")]
             if self.sack_permitted {
                 let tmp = options;
                 options = TcpOption::SackPermitted.emit(tmp);
@@ -291,7 +304,9 @@ mod test {
             window_scale: None,
             control: TcpControl::Syn,
             max_seg_size: None,
+            #[cfg(feature = "tcp-sack")]
             sack_permitted: false,
+            #[cfg(feature = "tcp-sack")]
             sack_ranges: [None, None, None],
             #[cfg(feature = "tcp-socket-timestamps")]
             timestamp: None,
