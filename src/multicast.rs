@@ -419,8 +419,10 @@ impl IfaceState<'_> {
     /// Host duties of the **IGMPv2** protocol.
     ///
     /// Sets up `igmp_report_state` for responding to IGMP general/specific membership queries.
-    /// Membership must not be reported immediately in order to avoid flooding the network
-    /// after a query is broadcasted by a router; this is not currently done.
+    /// Membership is not reported immediately, to avoid flooding the network after a query
+    /// is multicast by a router. The delay is not random as RFC 2236 §3 asks for: a general
+    /// query is answered with one report per group, spread evenly over the query's Max Resp
+    /// Time, and a group-specific query after a quarter of it.
     #[cfg(feature = "ipv4")]
     pub(crate) fn process_igmp(&mut self, inner: &mut StackInner, dst_addr: Ipv4Addr, mut buf: PacketBuf) {
         let igmp_packet = check!(IgmpPacket::new_checked(&mut buf));
@@ -436,7 +438,6 @@ impl IfaceState<'_> {
             return;
         }
 
-        // FIXME: report membership after a delay
         match igmp_packet.msg_type() {
             IgmpMessage::MembershipQuery => {
                 let max_resp_time = igmp_packet.max_resp_time();
@@ -548,8 +549,10 @@ impl IfaceState<'_> {
     /// Host duties of the **MLDv2** protocol.
     ///
     /// Sets up `mld_report_state` for responding to MLD general/specific membership queries.
-    /// Membership must not be reported immediately in order to avoid flooding the network
-    /// after a query is broadcasted by a router; Currently the delay is fixed and not randomized.
+    /// Membership is not reported immediately, to avoid flooding the network after a query
+    /// is multicast by a router: the report is delayed by a random time below the query's
+    /// Maximum Response Delay (RFC 3810 §6.2). A Maximum Response Code of zero asks for an
+    /// immediate report.
     #[cfg(feature = "ipv6")]
     pub(crate) fn process_mldv2(&mut self, inner: &mut StackInner, dst_addr: Ipv6Addr, icmp_packet: &Icmpv6Packet<'_>) {
         if icmp_packet.msg_code() != 0 {
@@ -557,15 +560,17 @@ impl IfaceState<'_> {
         }
 
         let mcast_addr = icmp_packet.mcast_addr();
-        let max_resp_code = icmp_packet.max_resp_code();
 
-        // Do not respond immediately to the query, but wait a random time
-        let delay = if max_resp_code > 0 {
-            (inner.rand.rand_u16() % max_resp_code).into()
+        // Do not respond immediately to the query, but wait a random time in
+        // [0, Maximum Response Delay). The wire layer decodes the delay from the
+        // Maximum Response Code, including the floating point form of codes of
+        // 32768 and above (RFC 3810 §5.1.3), so it can be longer than 65535 ms.
+        let max_resp_delay = icmp_packet.max_resp_delay().as_millis();
+        let delay = if max_resp_delay > 0 {
+            Duration::from_millis(u64::from(inner.rand.rand_u32()) % max_resp_delay)
         } else {
-            0
+            Duration::ZERO
         };
-        let delay = Duration::from_millis(delay);
         // General query
         if mcast_addr.is_unspecified() && (dst_addr == IPV6_LINK_LOCAL_ALL_NODES || self.has_ip_addr(dst_addr)) {
             let ipv6_multicast_group_count = self.multicast.keys().filter(|a| matches!(a, IpAddr::V6(_))).count();
@@ -1161,6 +1166,51 @@ mod test {
             inject(&mut stack, &rx, medium, EthernetProtocol::Ipv6, query, timestamp),
             Instant::MAX
         );
+    }
+
+    /// The report delay follows the query's Maximum Response Code: a code of
+    /// zero means report at once, and a code of 32768 or more is a floating
+    /// point value (RFC 3810 §5.1.3), not a count of milliseconds.
+    #[test]
+    fn test_multicast_query_max_resp_code() {
+        let medium = Medium::Ethernet;
+        let (mut stack, rx, tx) = test_stack(medium);
+        let mut timestamp = Instant::ZERO;
+        stack.poll(timestamp);
+        // flush the report from joining the solicited-node group
+        recv_mld(medium, &tx);
+        let expected_records = vec![(MldRecordType::ModeIsExclude, OUR_LL.solicited_node())];
+
+        // Code 0: the report goes out in the same poll that handles the query.
+        let query = mld_query(REMOTE_LL, IPV6_LINK_LOCAL_ALL_NODES, Ipv6Addr::UNSPECIFIED, 0);
+        let deadline = inject(&mut stack, &rx, medium, EthernetProtocol::Ipv6, query, timestamp);
+        assert_eq!(deadline, Instant::MAX);
+        assert_eq!(
+            recv_mld(medium, &tx),
+            [(OUR_LL, IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS, 1, expected_records.clone())]
+        );
+
+        // Code 0xffff decodes to 8387.584 s, not 65.535 s: every delay is below
+        // the former, and, the delays being random, some are above the latter.
+        let max_resp_delay = Duration::from_millis(8_387_584);
+        let mut above_linear = 0;
+        for _ in 0..16 {
+            let query = mld_query(REMOTE_LL, IPV6_LINK_LOCAL_ALL_NODES, Ipv6Addr::UNSPECIFIED, 0xffff);
+            let deadline = inject(&mut stack, &rx, medium, EthernetProtocol::Ipv6, query, timestamp);
+            assert!(deadline >= timestamp && deadline < timestamp + max_resp_delay);
+            if deadline >= timestamp + Duration::from_millis(65_535) {
+                above_linear += 1;
+            }
+            assert!(recv_mld(medium, &tx).is_empty());
+
+            timestamp += max_resp_delay;
+            assert_eq!(stack.poll(timestamp), Instant::MAX);
+            assert_eq!(
+                recv_mld(medium, &tx),
+                [(OUR_LL, IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS, 1, expected_records.clone())]
+            );
+        }
+        assert!(above_linear > 0);
     }
 
     /// The solicited-node group of every address is joined automatically on

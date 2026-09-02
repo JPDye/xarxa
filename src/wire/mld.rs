@@ -7,6 +7,7 @@
 use byteorder::{ByteOrder, NetworkEndian};
 
 use crate::error::Malformed;
+use crate::time::Duration;
 use crate::wire::Ipv6Addr;
 use crate::wire::icmpv6::{Packet, field};
 
@@ -45,6 +46,16 @@ impl<'a> Packet<'a> {
     #[inline]
     pub fn max_resp_code(&self) -> u16 {
         NetworkEndian::read_u16(&self.buffer[field::MAX_RESP_CODE])
+    }
+
+    /// Return the maximum response delay, decoded from the maximum response code field.
+    ///
+    /// See [RFC 3810 § 5.1.3].
+    ///
+    /// [RFC 3810 § 5.1.3]: https://tools.ietf.org/html/rfc3810#section-5.1.3
+    #[inline]
+    pub fn max_resp_delay(&self) -> Duration {
+        max_resp_code_to_delay(self.max_resp_code())
     }
 
     /// Return the address being queried.
@@ -99,6 +110,15 @@ impl<'a> Packet<'a> {
     #[inline]
     pub fn set_max_resp_code(&mut self, code: u16) {
         NetworkEndian::write_u16(&mut self.buffer[field::MAX_RESP_CODE], code);
+    }
+
+    /// Set the maximum response code field from a maximum response delay.
+    ///
+    /// The delay is rounded down to the nearest value the field can encode.
+    /// Delays longer than 8387.584 s are clamped to that.
+    #[inline]
+    pub fn set_max_resp_delay(&mut self, delay: Duration) {
+        self.set_max_resp_code(delay_to_max_resp_code(delay))
     }
 
     /// Set the address being queried.
@@ -265,6 +285,41 @@ impl<'a> AddressRecord<'a> {
     }
 }
 
+/// The longest maximum response delay the code field can encode, in milliseconds.
+const MAX_RESP_DELAY_MAX_MILLIS: u64 = 0x1FFF << 10;
+
+// RFC 3810 §5.1.3: a code below 32768 is the delay in milliseconds, a code of
+// 32768 or more is a floating point value, `(mant | 0x1000) << (exp + 3)`, with
+// a 3-bit exponent and a 12-bit mantissa.
+const fn max_resp_code_to_delay(code: u16) -> Duration {
+    let code = code as u64;
+    let millis = if code < 0x8000 {
+        code
+    } else {
+        let mant = code & 0xFFF;
+        let exp = (code >> 12) & 0x7;
+        (mant | 0x1000) << (exp + 3)
+    };
+    Duration::from_millis(millis)
+}
+
+const fn delay_to_max_resp_code(delay: Duration) -> u16 {
+    let millis = delay.as_millis();
+    if millis < 0x8000 {
+        millis as u16
+    } else if millis >= MAX_RESP_DELAY_MAX_MILLIS {
+        0xFFFF
+    } else {
+        let mut mant = millis >> 3;
+        let mut exp = 0u16;
+        while mant > 0x1FFF {
+            mant >>= 1;
+            exp += 1;
+        }
+        0x8000 | (exp << 12) | (mant as u16 & 0xFFF)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -291,6 +346,7 @@ mod test {
         assert_eq!(packet.msg_code(), 0);
         assert_eq!(packet.checksum(), 0x7374);
         assert_eq!(packet.max_resp_code(), 0x0400);
+        assert_eq!(packet.max_resp_delay(), Duration::from_millis(0x0400));
         assert_eq!(packet.mcast_addr(), IPV6_LINK_LOCAL_ALL_NODES);
         assert!(packet.s_flag());
         assert_eq!(packet.qrv(), 0x02);
@@ -369,5 +425,47 @@ mod test {
     fn test_record_too_short() {
         let mut bytes = [0; ADDRESS_RECORD_LEN - 1];
         assert_eq!(AddressRecord::new_checked(&mut bytes[..]).err(), Some(Malformed));
+    }
+
+    #[test]
+    fn test_max_resp_code_decode() {
+        // RFC 3810 §5.1.3: linear below 32768, floating point from there.
+        assert_eq!(max_resp_code_to_delay(0), Duration::ZERO);
+        assert_eq!(max_resp_code_to_delay(1000), Duration::from_millis(1000));
+        assert_eq!(max_resp_code_to_delay(0x7FFF), Duration::from_millis(32767));
+        assert_eq!(max_resp_code_to_delay(0x8000), Duration::from_millis(32768));
+        assert_eq!(max_resp_code_to_delay(0x8001), Duration::from_millis(32776));
+        assert_eq!(max_resp_code_to_delay(0x9000), Duration::from_millis(65536));
+        assert_eq!(max_resp_code_to_delay(0xFFFF), Duration::from_millis(8_387_584));
+    }
+
+    #[test]
+    fn test_max_resp_code_round_trip() {
+        for code in 0..=u16::MAX {
+            assert_eq!(delay_to_max_resp_code(max_resp_code_to_delay(code)), code);
+        }
+    }
+
+    #[test]
+    fn test_max_resp_delay_encode_rounding() {
+        // In the floating point range the delay is rounded down to a multiple
+        // of the exponent's step, 8 ms for exponent 0.
+        assert_eq!(delay_to_max_resp_code(Duration::from_millis(40_000)), 0x8388);
+        assert_eq!(delay_to_max_resp_code(Duration::from_millis(40_007)), 0x8388);
+        assert_eq!(max_resp_code_to_delay(0x8388), Duration::from_millis(40_000));
+        // Anything past the largest encodable delay is clamped to it.
+        for millis in [8_387_584, 8_387_585, 10_000_000] {
+            assert_eq!(delay_to_max_resp_code(Duration::from_millis(millis)), 0xFFFF);
+        }
+    }
+
+    #[test]
+    fn test_set_max_resp_delay() {
+        let mut bytes = vec![0; 28];
+        let mut packet = Packet::new_unchecked(&mut bytes);
+        packet.set_msg_type(Message::MldQuery);
+        packet.set_max_resp_delay(Duration::from_millis(65_536));
+        assert_eq!(packet.max_resp_code(), 0x9000);
+        assert_eq!(packet.max_resp_delay(), Duration::from_millis(65_536));
     }
 }
