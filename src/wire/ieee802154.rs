@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use super::{Result, take};
+use super::take;
 use crate::error::Malformed;
 use crate::wire::Ipv6Addr;
 
@@ -256,7 +256,7 @@ fn addr_present_flags(
 }
 
 /// Read an address in little-endian byte order.
-fn parse_addr(buf: &[u8], offset: &mut usize, mode: AddressingMode) -> Result<Address> {
+fn parse_addr(buf: &[u8], offset: &mut usize, mode: AddressingMode) -> Result<Address, Malformed> {
     match mode {
         AddressingMode::Absent => Ok(Address::Absent),
         AddressingMode::Short => {
@@ -299,7 +299,7 @@ impl Repr {
     /// Errors:
     /// - `Malformed` if the buffer is shorter than the header, or longer than 127
     ///   bytes, or the frame version or an addressing mode is unknown.
-    pub fn parse(buf: &[u8]) -> Result<(Repr, usize)> {
+    pub fn parse(buf: &[u8]) -> Result<(Repr, usize), Malformed> {
         // A frame is at most 127 bytes, and starts with the frame control
         // field and a sequence number.
         if buf.len() < 3 || buf.len() > 127 {

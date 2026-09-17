@@ -1,7 +1,6 @@
 use bitflags::bitflags;
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::Result;
 use crate::error::Malformed;
 use crate::time::Duration;
 use crate::wire::{Ipv6Addr, MAX_HARDWARE_ADDRESS_LEN};
@@ -140,7 +139,7 @@ impl<'a> NdiscOption<'a> {
     ///
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
-    pub fn new_checked(buffer: &'a mut [u8]) -> Result<NdiscOption<'a>> {
+    pub fn new_checked(buffer: &'a mut [u8]) -> Result<NdiscOption<'a>, Malformed> {
         let opt = Self::new_unchecked(buffer);
         opt.check_len()?;
 
@@ -158,7 +157,7 @@ impl<'a> NdiscOption<'a> {
     /// The result of this check is invalidated by calling [set_data_len].
     ///
     /// [set_data_len]: #method.set_data_len
-    pub fn check_len(&self) -> Result<()> {
+    pub fn check_len(&self) -> Result<(), Malformed> {
         let len = self.buffer.len();
 
         if len < field::MIN_OPT_LEN {

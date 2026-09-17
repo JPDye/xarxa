@@ -123,7 +123,7 @@ impl Iface<'_, '_> {
     pub fn set_sixlowpan_address_context(
         &mut self,
         contexts: impl IntoIterator<Item = SixlowpanAddressContext>,
-    ) -> core::result::Result<(), Full> {
+    ) -> Result<(), Full> {
         let mut new: Vec<SixlowpanAddressContext, SIXLOWPAN_ADDRESS_CONTEXT_COUNT> = Vec::new();
         new.try_extend(contexts)?;
         self.state_mut().sixlowpan.sixlowpan_address_context = new;
@@ -245,7 +245,7 @@ pub(crate) fn sixlowpan_to_ipv6(
     ll_dst_addr: Option<Ieee802154Address>,
     address_context: &[SixlowpanAddressContext],
     total_len: Option<usize>,
-) -> Result<()> {
+) -> Result<(), Malformed> {
     // Parse everything first. The write pass below overwrites the compressed
     // headers, so nothing may be read from them after it starts.
     let (iphc_repr, iphc_len) = SixlowpanIphcRepr::parse(buf, ll_src_addr, ll_dst_addr, address_context)?;
@@ -397,7 +397,7 @@ pub(crate) fn sixlowpan_to_ipv6(
 /// converted: for a compressed next header, that is where the compressed
 /// header it names starts.
 #[inline]
-fn decompress_next_header(next_header: SixlowpanNextHeader, payload: &[u8]) -> Result<IpProtocol> {
+fn decompress_next_header(next_header: SixlowpanNextHeader, payload: &[u8]) -> Result<IpProtocol, Malformed> {
     match next_header {
         SixlowpanNextHeader::Compressed => match SixlowpanNhcPacket::dispatch(payload)? {
             SixlowpanNhcPacket::ExtHeader => {
@@ -429,7 +429,7 @@ struct ExtHeader {
 ///
 /// Returns the difference between the uncompressed and the compressed header
 /// chain lengths, which fragmentation needs for its offsets.
-pub(crate) fn ipv6_to_sixlowpan(buf: &mut PacketBuf, ieee_repr: &Ieee802154Repr) -> Result<usize> {
+pub(crate) fn ipv6_to_sixlowpan(buf: &mut PacketBuf, ieee_repr: &Ieee802154Repr) -> Result<usize, Malformed> {
     // Parse the uncompressed chain.
     let packet = Ipv6Packet::new_checked(buf)?;
     let src_addr = packet.src_addr();
@@ -1024,7 +1024,7 @@ mod test {
         context: &[SixlowpanAddressContext],
         headroom: usize,
         total_len: Option<usize>,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<Vec<u8>, Malformed> {
         let mut buf = PacketBuf::try_new().unwrap();
         buf.reserve(headroom);
         buf.set_len(payload.len());

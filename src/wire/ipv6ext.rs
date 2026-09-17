@@ -1,7 +1,6 @@
 //! IPv6 extension headers (RFC 8200 §4): the common (next header, length) prefix,
 //! and the TLV option walk shared by the Hop-by-Hop and Destination Options headers.
 
-use super::Result;
 use crate::error::Malformed;
 use crate::wire::ip::Protocol;
 
@@ -32,7 +31,7 @@ impl<'a> ExtHeader<'a> {
     ///
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
-    pub fn new_checked(buffer: &'a [u8]) -> Result<ExtHeader<'a>> {
+    pub fn new_checked(buffer: &'a [u8]) -> Result<ExtHeader<'a>, Malformed> {
         let header = Self::new_unchecked(buffer);
         header.check_len()?;
         Ok(header)
@@ -40,7 +39,7 @@ impl<'a> ExtHeader<'a> {
 
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Malformed)` if the buffer is too short.
-    pub fn check_len(&self) -> Result<()> {
+    pub fn check_len(&self) -> Result<(), Malformed> {
         if self.buffer.len() < field::DATA_START || self.buffer.len() < self.header_len() {
             Err(Malformed)
         } else {
@@ -151,7 +150,7 @@ impl<'a> OptionsIter<'a> {
 }
 
 impl<'a> Iterator for OptionsIter<'a> {
-    type Item = Result<(usize, OptionType, &'a [u8])>;
+    type Item = Result<(usize, OptionType, &'a [u8]), Malformed>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.offset >= self.options.len() {

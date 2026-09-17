@@ -347,7 +347,7 @@ impl<'d> Iface<'_, 'd> {
     /// Errors:
     /// - `MediumMismatch` if the address is not of the kind the interface's
     ///   medium uses. The interface is left unchanged.
-    pub fn set_hardware_addr(&mut self, addr: HardwareAddress) -> core::result::Result<(), MediumMismatch> {
+    pub fn set_hardware_addr(&mut self, addr: HardwareAddress) -> Result<(), MediumMismatch> {
         if addr.medium() != self.state().medium() {
             return Err(MediumMismatch);
         }
@@ -392,7 +392,7 @@ impl<'d> Iface<'_, 'd> {
     /// - `Full` if the interface has no room for another address. Only possible
     ///   without the `alloc` feature, where the limit is
     ///   [`IFACE_ADDR_COUNT`].
-    pub fn add_ip_addr(&mut self, cidr: IpCidr) -> core::result::Result<Option<IpCidr>, AddrError> {
+    pub fn add_ip_addr(&mut self, cidr: IpCidr) -> Result<Option<IpCidr>, AddrError> {
         if !cidr.address().is_unicast() {
             return Err(AddrError::NotUnicast);
         }
@@ -435,7 +435,7 @@ impl<'d> Iface<'_, 'd> {
     /// - `NotUnicast` if any of the addresses is not unicast.
     /// - `Full` if the addresses do not fit. Only possible without the `alloc`
     ///   feature, where the limit is [`IFACE_ADDR_COUNT`].
-    pub fn set_ip_addrs(&mut self, new_addrs: impl IntoIterator<Item = IpCidr>) -> core::result::Result<(), AddrError> {
+    pub fn set_ip_addrs(&mut self, new_addrs: impl IntoIterator<Item = IpCidr>) -> Result<(), AddrError> {
         #[allow(unused_mut)]
         let mut addrs: Vec<IfaceAddr, IFACE_ADDR_COUNT> = Vec::new();
         for cidr in new_addrs {
@@ -499,7 +499,7 @@ impl<'d> Iface<'_, 'd> {
     /// Errors:
     /// - `MediumMismatch` if the interface is not an Ethernet interface.
     #[cfg(feature = "dhcpv4")]
-    pub fn set_dhcpv4(&mut self, config: Option<self::dhcpv4::DhcpConfig>) -> core::result::Result<(), MediumMismatch> {
+    pub fn set_dhcpv4(&mut self, config: Option<self::dhcpv4::DhcpConfig>) -> Result<(), MediumMismatch> {
         if !matches!(self.state().hardware_addr, HardwareAddress::Ethernet(_)) {
             return Err(MediumMismatch);
         }
@@ -524,7 +524,7 @@ impl<'d> Iface<'_, 'd> {
     /// - `MediumMismatch` if the interface is not an Ethernet or IEEE 802.15.4
     ///   interface.
     #[cfg(feature = "slaac")]
-    pub fn set_slaac(&mut self, config: Option<self::slaac::SlaacConfig>) -> core::result::Result<(), MediumMismatch> {
+    pub fn set_slaac(&mut self, config: Option<self::slaac::SlaacConfig>) -> Result<(), MediumMismatch> {
         if !self.state().has_link_layer() {
             return Err(MediumMismatch);
         }
@@ -588,7 +588,7 @@ impl<'d> Iface<'_, 'd> {
     pub fn set_dhcpv4_server(
         &mut self,
         config: Option<self::dhcpv4_server::DhcpServerConfig>,
-    ) -> core::result::Result<(), self::dhcpv4_server::DhcpServerError> {
+    ) -> Result<(), self::dhcpv4_server::DhcpServerError> {
         use self::dhcpv4_server::DhcpServerError;
 
         if !matches!(self.state().hardware_addr, HardwareAddress::Ethernet(_)) {

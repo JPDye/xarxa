@@ -1,7 +1,6 @@
 use core::convert::From;
 use core::fmt;
 
-use super::Result;
 use crate::error::Malformed;
 #[cfg(feature = "ipv4")]
 use crate::wire::{Ipv4Addr, Ipv4AddrExt, Ipv4Cidr};
@@ -23,7 +22,7 @@ impl Version {
     ///
     /// This function never returns `Ok(IpVersion::Unspecified)`; instead,
     /// unknown versions result in `Err(Malformed)`.
-    pub const fn of_packet(data: &[u8]) -> Result<Version> {
+    pub const fn of_packet(data: &[u8]) -> Result<Version, Malformed> {
         match data[0] >> 4 {
             #[cfg(feature = "ipv4")]
             4 => Ok(Version::V4),

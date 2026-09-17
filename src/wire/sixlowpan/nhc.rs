@@ -1,7 +1,7 @@
 //! Next header compression ([RFC 6282 § 4]).
 //!
 //! [RFC 6282 § 4]: https://datatracker.ietf.org/doc/html/rfc6282#section-4
-use super::{DISPATCH_EXT_HEADER, DISPATCH_UDP_HEADER, Malformed, NextHeader, Result};
+use super::{DISPATCH_EXT_HEADER, DISPATCH_UDP_HEADER, Malformed, NextHeader};
 use crate::wire::IpProtocol;
 use crate::wire::take;
 
@@ -21,7 +21,7 @@ impl NhcPacket {
     /// Errors:
     /// - `Malformed` if the buffer is empty, or the dispatch is neither an
     ///   extension header nor a UDP header.
-    pub fn dispatch(buffer: &[u8]) -> Result<Self> {
+    pub fn dispatch(buffer: &[u8]) -> Result<Self, Malformed> {
         let raw = buffer;
         if raw.is_empty() {
             return Err(Malformed);
@@ -95,7 +95,7 @@ impl ExtHeaderRepr {
     /// Errors:
     /// - `Malformed` if the buffer is shorter than the header, or does not start
     ///   with an extension header dispatch.
-    pub fn parse(buf: &[u8]) -> Result<(Self, usize)> {
+    pub fn parse(buf: &[u8]) -> Result<(Self, usize), Malformed> {
         if buf.is_empty() {
             return Err(Malformed);
         }
@@ -195,7 +195,7 @@ impl UdpNhcRepr {
     /// Errors:
     /// - `Malformed` if the buffer is shorter than the header, or does not start
     ///   with a UDP header dispatch.
-    pub fn parse(buf: &[u8]) -> Result<(Self, usize)> {
+    pub fn parse(buf: &[u8]) -> Result<(Self, usize), Malformed> {
         if buf.is_empty() {
             return Err(Malformed);
         }

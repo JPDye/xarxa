@@ -1,6 +1,5 @@
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::Result;
 use crate::error::Malformed;
 use crate::wire::ip::checksum;
 
@@ -156,7 +155,7 @@ impl<'a> Packet<'a> {
     ///
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
-    pub fn new_checked(buffer: &'a mut [u8]) -> Result<Packet<'a>> {
+    pub fn new_checked(buffer: &'a mut [u8]) -> Result<Packet<'a>, Malformed> {
         let packet = Self::new_unchecked(buffer);
         packet.check_len()?;
         Ok(packet)
@@ -168,7 +167,7 @@ impl<'a> Packet<'a> {
     /// The result of this check is invalidated by calling [set_header_len].
     ///
     /// [set_header_len]: #method.set_header_len
-    pub fn check_len(&self) -> Result<()> {
+    pub fn check_len(&self) -> Result<(), Malformed> {
         let len = self.buffer.len();
         if len < field::HEADER_END {
             Err(Malformed)

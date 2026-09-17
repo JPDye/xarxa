@@ -2,7 +2,7 @@
 //!
 //! [RFC 6282 § 3.1]: https://datatracker.ietf.org/doc/html/rfc6282#section-3.1
 
-use super::{AddressContext, DISPATCH_IPHC_HEADER, Malformed, NextHeader, Result};
+use super::{AddressContext, DISPATCH_IPHC_HEADER, Malformed, NextHeader};
 use crate::wire::take;
 use crate::wire::{IpProtocol, ieee802154::Address as LlAddress, ipv6, ipv6::AddressExt};
 
@@ -15,7 +15,7 @@ const EUI64_MIDDLE_VALUE: [u8; 2] = [0xff, 0xfe];
 
 /// The interface identifier an elided address takes from the link-layer
 /// address (RFC 6282 § 3.2.2).
-fn ll_iid(ll_addr: Option<LlAddress>) -> Result<[u8; 8]> {
+fn ll_iid(ll_addr: Option<LlAddress>) -> Result<[u8; 8], Malformed> {
     match ll_addr {
         Some(LlAddress::Short(ll)) => Ok([0, 0, 0, 0xff, 0xfe, 0, ll[0], ll[1]]),
         Some(addr @ LlAddress::Extended(_)) => addr.as_eui_64().ok_or(Malformed),
@@ -24,7 +24,7 @@ fn ll_iid(ll_addr: Option<LlAddress>) -> Result<[u8; 8]> {
 }
 
 /// Overwrite the prefix of `bytes` with the address context `index` refers to.
-fn apply_context(addr_context: &[AddressContext], index: usize, bytes: &mut [u8; 16]) -> Result<()> {
+fn apply_context(addr_context: &[AddressContext], index: usize, bytes: &mut [u8; 16]) -> Result<(), Malformed> {
     let context = addr_context.get(index).ok_or(Malformed)?;
     bytes[..context.0.len()].copy_from_slice(&context.0);
     Ok(())
@@ -173,7 +173,7 @@ impl Repr {
         ll_src_addr: Option<LlAddress>,
         ll_dst_addr: Option<LlAddress>,
         addr_context: &[AddressContext],
-    ) -> Result<(Self, usize)> {
+    ) -> Result<(Self, usize), Malformed> {
         if buf.len() < 2 {
             return Err(Malformed);
         }

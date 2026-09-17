@@ -33,7 +33,7 @@ mod field {
 /// Read `n` bytes at `*offset` and advance it. For parsers of headers whose
 /// layout depends on their own fields.
 #[cfg(feature = "medium-ieee802154")]
-pub(crate) fn take<'a>(buf: &'a [u8], offset: &mut usize, n: usize) -> Result<&'a [u8]> {
+pub(crate) fn take<'a>(buf: &'a [u8], offset: &mut usize, n: usize) -> Result<&'a [u8], Malformed> {
     let bytes = buf.get(*offset..*offset + n).ok_or(Malformed)?;
     *offset += n;
     Ok(bytes)
@@ -214,9 +214,6 @@ pub use self::dns::{
     Flags as DnsFlags, HEADER_LEN as DNS_HEADER_LEN, Opcode as DnsOpcode, Packet as DnsPacket, Question as DnsQuestion,
     Rcode as DnsRcode, Record as DnsRecord, RecordData as DnsRecordData, Type as DnsType,
 };
-
-/// Shorthand for a wire-layer parse result.
-pub type Result<T> = core::result::Result<T, crate::error::Malformed>;
 
 /// A hardware (link-layer) address.
 ///
@@ -460,7 +457,7 @@ impl RawHardwareAddress {
     /// - `Malformed` if the length is wrong for the medium: 6 bytes for Ethernet,
     ///   8 (an extended address) for IEEE 802.15.4, or if the medium has no
     ///   addresses.
-    pub fn parse(&self, medium: Medium) -> Result<HardwareAddress> {
+    pub fn parse(&self, medium: Medium) -> Result<HardwareAddress, Malformed> {
         match medium {
             #[cfg(feature = "medium-ethernet")]
             Medium::Ethernet => {

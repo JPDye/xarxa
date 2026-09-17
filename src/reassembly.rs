@@ -8,7 +8,6 @@
 //! completes or expires.
 
 use core::fmt;
-use core::result::Result;
 
 use crate::config::REASSEMBLY_BUFFER_COUNT;
 use crate::driver::PacketBuf;

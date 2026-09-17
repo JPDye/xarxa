@@ -1,7 +1,6 @@
 use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
-use super::Result;
 use crate::error::Malformed;
 
 open_enum! {
@@ -107,7 +106,7 @@ impl<'a> Frame<'a> {
     ///
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
-    pub fn new_checked(buffer: &'a mut [u8]) -> Result<Frame<'a>> {
+    pub fn new_checked(buffer: &'a mut [u8]) -> Result<Frame<'a>, Malformed> {
         let packet = Self::new_unchecked(buffer);
         packet.check_len()?;
         Ok(packet)
@@ -115,7 +114,7 @@ impl<'a> Frame<'a> {
 
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Malformed)` if the buffer is too short.
-    pub fn check_len(&self) -> Result<()> {
+    pub fn check_len(&self) -> Result<(), Malformed> {
         let len = self.buffer.len();
         if len < HEADER_LEN { Err(Malformed) } else { Ok(()) }
     }

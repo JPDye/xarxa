@@ -15,7 +15,7 @@ use core::cmp::min;
 use core::task::Waker;
 
 use crate::config::{DNS_MAX_NAME_SIZE, DNS_MAX_QUERY_COUNT, DNS_MAX_RESULT_COUNT, DNS_MAX_SERVER_COUNT};
-use crate::error::Full;
+use crate::error::{Full, Malformed};
 use crate::storage::Slab;
 use heapless::Vec;
 
@@ -23,7 +23,7 @@ use crate::stack::Stack;
 use crate::time::{Duration, Instant};
 use crate::udp::{RecvError, SendError, UdpHandle};
 use crate::wire::dns::{Flags, HEADER_LEN, Opcode, Packet, Question, Rcode, Record, RecordData, Type};
-use crate::wire::{self, IpAddr, ListenSocketAddr, SocketAddr};
+use crate::wire::{IpAddr, ListenSocketAddr, SocketAddr};
 
 #[cfg(feature = "async")]
 use crate::waker::WakerRegistration;
@@ -166,7 +166,7 @@ impl DnsClient {
     ///
     /// Errors:
     /// - `Full` if the stack has no room for another UDP socket.
-    pub fn new(stack: &mut Stack, servers: &[IpAddr]) -> core::result::Result<DnsClient, Full> {
+    pub fn new(stack: &mut Stack, servers: &[IpAddr]) -> Result<DnsClient, Full> {
         let truncated_servers = &servers[..min(servers.len(), DNS_MAX_SERVER_COUNT)];
 
         let socket = stack.add_udp_socket()?;
@@ -632,9 +632,9 @@ impl DnsClient {
 }
 
 fn eq_names<'a>(
-    mut a: impl Iterator<Item = wire::Result<&'a [u8]>>,
-    mut b: impl Iterator<Item = wire::Result<&'a [u8]>>,
-) -> wire::Result<bool> {
+    mut a: impl Iterator<Item = Result<&'a [u8], Malformed>>,
+    mut b: impl Iterator<Item = Result<&'a [u8], Malformed>>,
+) -> Result<bool, Malformed> {
     loop {
         match (a.next(), b.next()) {
             // Handle errors
@@ -660,7 +660,7 @@ fn eq_names<'a>(
 
 fn copy_name<'a, const N: usize>(
     dest: &mut Vec<u8, N>,
-    name: impl Iterator<Item = wire::Result<&'a [u8]>>,
+    name: impl Iterator<Item = Result<&'a [u8], Malformed>>,
 ) -> Result<(), crate::error::Malformed> {
     dest.truncate(0);
 

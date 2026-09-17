@@ -4,7 +4,6 @@ use bitflags::bitflags;
 use byteorder::{ByteOrder, NetworkEndian};
 use core::iter;
 
-use super::Result;
 use crate::error::Malformed;
 use crate::wire::arp::Hardware;
 use crate::wire::{EthernetAddress, Ipv4Addr};
@@ -86,7 +85,7 @@ impl<'a> OptionWriter<'a> {
     ///
     /// Errors if the option data is longer than 255 bytes or doesn't fit in the
     /// remaining space.
-    pub fn emit(&mut self, option: DhcpOption<'_>) -> Result<()> {
+    pub fn emit(&mut self, option: DhcpOption<'_>) -> Result<(), Malformed> {
         if option.data.len() > u8::MAX as _ {
             return Err(Malformed);
         }
@@ -110,7 +109,7 @@ impl<'a> OptionWriter<'a> {
     /// Write the end marker. No more options can be written after this.
     ///
     /// Errors if there is no space left.
-    pub fn end(&mut self) -> Result<()> {
+    pub fn end(&mut self) -> Result<(), Malformed> {
         if self.buffer.is_empty() {
             return Err(Malformed);
         }
@@ -290,7 +289,7 @@ impl<'a> Packet<'a> {
     ///
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
-    pub fn new_checked(buffer: &'a mut [u8]) -> Result<Packet<'a>> {
+    pub fn new_checked(buffer: &'a mut [u8]) -> Result<Packet<'a>, Malformed> {
         let packet = Self::new_unchecked(buffer);
         packet.check_len()?;
         Ok(packet)
@@ -298,7 +297,7 @@ impl<'a> Packet<'a> {
 
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Malformed)` if the buffer is too short.
-    pub fn check_len(&self) -> Result<()> {
+    pub fn check_len(&self) -> Result<(), Malformed> {
         let len = self.buffer.len();
         if len < HEADER_LEN { Err(Malformed) } else { Ok(()) }
     }
@@ -433,7 +432,7 @@ impl<'a> Packet<'a> {
     /// Return the message type, from the message type option.
     ///
     /// Errors if the option is missing or malformed.
-    pub fn message_type(&self) -> Result<MessageType> {
+    pub fn message_type(&self) -> Result<MessageType, Malformed> {
         match self.option(field::OPT_DHCP_MESSAGE_TYPE) {
             Some(&[value]) => Ok(MessageType::from(value)),
             _ => Err(Malformed),
@@ -443,7 +442,7 @@ impl<'a> Packet<'a> {
     /// Return the `sname` (server name) field as a string.
     ///
     /// Errors if it is empty or not valid UTF-8.
-    pub fn sname(&self) -> Result<&str> {
+    pub fn sname(&self) -> Result<&str, Malformed> {
         let data = &self.buffer[field::SNAME];
         let len = data.iter().position(|&x| x == 0).ok_or(Malformed)?;
         if len == 0 {
@@ -457,7 +456,7 @@ impl<'a> Packet<'a> {
     /// Return the `file` (boot file name) field as a string.
     ///
     /// Errors if it is empty or not valid UTF-8.
-    pub fn boot_file(&self) -> Result<&str> {
+    pub fn boot_file(&self) -> Result<&str, Malformed> {
         let data = &self.buffer[field::FILE];
         let len = data.iter().position(|&x| x == 0).ok_or(Malformed)?;
         if len == 0 {

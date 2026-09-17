@@ -3,7 +3,6 @@
 use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
-use super::Result;
 use crate::error::Malformed;
 
 pub use super::IpProtocol as Protocol;
@@ -356,7 +355,7 @@ impl<'a> Packet<'a> {
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
     #[inline]
-    pub fn new_checked(buffer: &'a mut [u8]) -> Result<Packet<'a>> {
+    pub fn new_checked(buffer: &'a mut [u8]) -> Result<Packet<'a>, Malformed> {
         let packet = Self::new_unchecked(buffer);
         packet.check_len()?;
         Ok(packet)
@@ -369,7 +368,7 @@ impl<'a> Packet<'a> {
     ///
     /// [set_payload_len]: #method.set_payload_len
     #[inline]
-    pub fn check_len(&self) -> Result<()> {
+    pub fn check_len(&self) -> Result<(), Malformed> {
         let len = self.buffer.len();
         if len < field::DST_ADDR.end || len < self.total_len() {
             Err(Malformed)

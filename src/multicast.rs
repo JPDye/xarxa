@@ -5,7 +5,6 @@
 use crate::config::MULTICAST_GROUP_COUNT;
 use crate::error::Full;
 use crate::storage::Vec;
-use core::result::Result;
 
 use crate::driver::PacketBuf;
 use crate::iface::{Iface, IfaceState};

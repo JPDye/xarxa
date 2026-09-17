@@ -9,7 +9,7 @@ use core::fmt;
 
 use crate::driver::ChecksumCapabilities;
 use crate::error::Malformed;
-use crate::wire::{IpAddr, Result, TCP_HEADER_LEN, TcpControl, TcpOption, TcpPacket, TcpSeqNumber};
+use crate::wire::{IpAddr, TCP_HEADER_LEN, TcpControl, TcpOption, TcpPacket, TcpSeqNumber};
 
 /// A high-level representation of a Transmission Control Protocol packet.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -60,7 +60,7 @@ impl<'a> TcpRepr<'a> {
     ///
     /// The checksum is not verified here. The caller verifies it on the wire packet
     /// before parsing.
-    pub fn parse(packet: &'a TcpPacket<'_>, src_addr: &IpAddr, dst_addr: &IpAddr) -> Result<TcpRepr<'a>> {
+    pub fn parse(packet: &'a TcpPacket<'_>, src_addr: &IpAddr, dst_addr: &IpAddr) -> Result<TcpRepr<'a>, Malformed> {
         packet.check_len()?;
 
         // Source and destination ports must be present.

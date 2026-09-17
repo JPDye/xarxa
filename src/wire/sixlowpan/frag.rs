@@ -4,7 +4,6 @@
 
 use super::{DISPATCH_FIRST_FRAGMENT_HEADER, DISPATCH_FRAGMENT_HEADER};
 use crate::error::Malformed;
-use crate::wire::Result;
 use crate::wire::{Ieee802154Address, Ieee802154Repr};
 
 /// Key used for identifying all the link fragments that belong to the same packet.
@@ -98,7 +97,7 @@ impl Repr {
     /// Errors:
     /// - `Malformed` if the buffer is shorter than the header, or does not start
     ///   with a fragment header dispatch.
-    pub fn parse(buf: &[u8]) -> Result<Self> {
+    pub fn parse(buf: &[u8]) -> Result<Self, Malformed> {
         if buf.len() < FIRST_FRAGMENT_HEADER_SIZE {
             return Err(Malformed);
         }

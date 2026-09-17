@@ -10,10 +10,12 @@ use crate::config::TCP_SOCKET_COUNT;
 #[cfg(feature = "udp")]
 use crate::config::UDP_SOCKET_COUNT;
 use crate::driver::{ChecksumCapabilities, Driver, PacketBuf};
-#[cfg(any(feature = "udp", feature = "_raw", feature = "tcp"))]
-use crate::error::Full;
 #[cfg(all(feature = "icmp-errors", any(feature = "udp", feature = "tcp")))]
 use crate::error::IcmpError;
+#[cfg(any(feature = "udp", feature = "_raw", feature = "tcp"))]
+use crate::error::Full;
+#[cfg(feature = "ipv6")]
+use crate::error::Malformed;
 #[cfg(any(feature = "ipv4-fragmentation", feature = "sixlowpan-fragmentation"))]
 use crate::fragmentation::Fragmenter;
 #[cfg(all(feature = "icmp-errors", any(feature = "udp", feature = "tcp")))]
@@ -513,7 +515,7 @@ impl<'d> Stack<'d> {
     /// - `HostnameTooLong` if `hostname` is longer than 63 bytes. The hostname
     ///   is left unchanged.
     #[cfg(feature = "hostname")]
-    pub fn set_hostname(&mut self, hostname: &str) -> core::result::Result<(), crate::error::HostnameTooLong> {
+    pub fn set_hostname(&mut self, hostname: &str) -> Result<(), crate::error::HostnameTooLong> {
         if hostname.len() > HOSTNAME_MAX_LEN {
             return Err(crate::error::HostnameTooLong);
         }
@@ -551,10 +553,7 @@ impl<'d> Stack<'d> {
     /// - `HardwareAddrMismatch` if the hardware address the device reports is
     ///   not of the kind its medium uses.
     #[cfg(feature = "alloc")]
-    pub fn add_iface(
-        &mut self,
-        driver: alloc::boxed::Box<dyn Driver + 'd>,
-    ) -> core::result::Result<IfaceHandle, AddIfaceError> {
+    pub fn add_iface(&mut self, driver: alloc::boxed::Box<dyn Driver + 'd>) -> Result<IfaceHandle, AddIfaceError> {
         self.add_iface_inner(driver.into())
     }
 
@@ -573,17 +572,11 @@ impl<'d> Stack<'d> {
     ///   device's medium.
     /// - `HardwareAddrMismatch` if the hardware address the device reports is
     ///   not of the kind its medium uses.
-    pub fn add_iface_borrowed(
-        &mut self,
-        driver: &'d mut dyn Driver,
-    ) -> core::result::Result<IfaceHandle, AddIfaceError> {
+    pub fn add_iface_borrowed(&mut self, driver: &'d mut dyn Driver) -> Result<IfaceHandle, AddIfaceError> {
         self.add_iface_inner(driver.into())
     }
 
-    fn add_iface_inner(
-        &mut self,
-        driver: MaybeBox<'d, dyn Driver + 'd>,
-    ) -> core::result::Result<IfaceHandle, AddIfaceError> {
+    fn add_iface_inner(&mut self, driver: MaybeBox<'d, dyn Driver + 'd>) -> Result<IfaceHandle, AddIfaceError> {
         let caps = driver.capabilities();
         let medium = Medium::from_driver(caps.medium).ok_or(AddIfaceError::UnsupportedMedium)?;
         // The medium is supported, so an address kind the build does not have is
@@ -694,7 +687,7 @@ impl<'d> Stack<'d> {
     ///   without the `alloc` feature, where the limit is
     ///   [`UDP_SOCKET_COUNT`].
     #[cfg(feature = "udp")]
-    pub fn add_udp_socket(&mut self) -> core::result::Result<UdpHandle, Full> {
+    pub fn add_udp_socket(&mut self) -> Result<UdpHandle, Full> {
         Ok(UdpHandle::new(self.sockets.udp.add_with(|_| UdpSocketState::new())?))
     }
 
@@ -731,7 +724,7 @@ impl<'d> Stack<'d> {
     ///   without the `alloc` feature, where the limit is
     ///   [`RAW_SOCKET_COUNT`].
     #[cfg(feature = "_raw")]
-    pub fn add_raw_socket(&mut self) -> core::result::Result<RawHandle, Full> {
+    pub fn add_raw_socket(&mut self) -> Result<RawHandle, Full> {
         Ok(RawHandle::new(self.sockets.raw.add_with(|_| RawSocketState::new())?))
     }
 
@@ -774,7 +767,7 @@ impl<'d> Stack<'d> {
     ///   without the `alloc` feature, where the limit is
     ///   [`TCP_SOCKET_COUNT`].
     #[cfg(all(feature = "tcp", feature = "alloc"))]
-    pub fn add_tcp_socket(&mut self, rx_capacity: usize, tx_capacity: usize) -> core::result::Result<TcpHandle, Full> {
+    pub fn add_tcp_socket(&mut self, rx_capacity: usize, tx_capacity: usize) -> Result<TcpHandle, Full> {
         self.add_tcp_socket_inner(
             SocketBuffer::new(alloc::vec![0; rx_capacity]),
             SocketBuffer::new(alloc::vec![0; tx_capacity]),
@@ -807,7 +800,7 @@ impl<'d> Stack<'d> {
         &mut self,
         rx_buffer: &'d mut [u8],
         tx_buffer: &'d mut [u8],
-    ) -> core::result::Result<TcpHandle, Full> {
+    ) -> Result<TcpHandle, Full> {
         self.add_tcp_socket_inner(SocketBuffer::new(rx_buffer), SocketBuffer::new(tx_buffer))
     }
 
@@ -816,7 +809,7 @@ impl<'d> Stack<'d> {
         &mut self,
         rx_buffer: SocketBuffer<'d>,
         tx_buffer: SocketBuffer<'d>,
-    ) -> core::result::Result<TcpHandle, Full> {
+    ) -> Result<TcpHandle, Full> {
         Ok(TcpHandle::new(
             self.sockets
                 .tcp
@@ -860,7 +853,7 @@ impl<'d> Stack<'d> {
     ///   without the `alloc` feature, where the limit is
     ///   [`TCP_LISTENER_COUNT`].
     #[cfg(feature = "tcp-listener")]
-    pub fn add_tcp_listener(&mut self) -> core::result::Result<TcpListenerHandle, Full> {
+    pub fn add_tcp_listener(&mut self) -> Result<TcpListenerHandle, Full> {
         Ok(TcpListenerHandle::new(
             self.sockets.tcp_listeners.add_with(|_| TcpListenerState::new())?,
         ))
@@ -2743,7 +2736,7 @@ enum HopByHopAction {
 /// Recognized options (padding, router alert) are skipped. Unrecognized ones are
 /// acted on per the two high bits of their type (RFC 8200 §4.2).
 #[cfg(feature = "ipv6")]
-fn process_hop_by_hop(payload: &[u8]) -> crate::wire::Result<HopByHopAction> {
+fn process_hop_by_hop(payload: &[u8]) -> Result<HopByHopAction, Malformed> {
     let ext = Ipv6ExtHeader::new_checked(payload)?;
     for option in Ipv6OptionsIter::new(ext.data()) {
         let (offset, option_type, _data) = option?;
@@ -2803,7 +2796,7 @@ pub(crate) fn write_lladdr_option(opt: &mut [u8], option_type: NdiscOptionType, 
 fn ndisc_lladdr_option(
     icmp_packet: &mut Icmpv6Packet<'_>,
     option_type: NdiscOptionType,
-) -> crate::wire::Result<Option<RawHardwareAddress>> {
+) -> Result<Option<RawHardwareAddress>, Malformed> {
     let mut lladdr = None;
     let options = icmp_packet.payload_mut();
     let mut offset = 0;
@@ -2812,7 +2805,7 @@ fn ndisc_lladdr_option(
         let opt_len = opt.data_len() as usize * 8;
         if opt_len == 0 {
             trace!("ndisc: option with zero length");
-            return Err(crate::error::Malformed);
+            return Err(Malformed);
         }
         if opt.option_type() == option_type {
             lladdr = Some(opt.link_layer_addr());

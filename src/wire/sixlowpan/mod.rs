@@ -4,7 +4,6 @@
 //! [RFC 4944]: https://datatracker.ietf.org/doc/html/rfc4944
 //! [RFC 6282]: https://datatracker.ietf.org/doc/html/rfc6282
 
-use super::Result;
 use crate::error::Malformed;
 use crate::wire::IpProtocol;
 
@@ -42,7 +41,7 @@ impl SixlowpanPacket {
     /// Errors:
     /// - `Malformed` if the payload is empty, or the dispatch is neither a
     ///   fragment header nor an IPHC header.
-    pub fn dispatch(buffer: &[u8]) -> Result<Self> {
+    pub fn dispatch(buffer: &[u8]) -> Result<Self, Malformed> {
         let raw = buffer;
 
         if raw.is_empty() {

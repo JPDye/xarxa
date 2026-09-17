@@ -3,7 +3,6 @@ use byteorder::{ByteOrder, NetworkEndian};
 use core::iter;
 use core::iter::Iterator;
 
-use super::Result;
 use crate::error::Malformed;
 #[cfg(feature = "ipv4")]
 use crate::wire::Ipv4Addr;
@@ -101,7 +100,7 @@ impl<'a> Packet<'a> {
     ///
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
-    pub fn new_checked(buffer: &'a mut [u8]) -> Result<Packet<'a>> {
+    pub fn new_checked(buffer: &'a mut [u8]) -> Result<Packet<'a>, Malformed> {
         let packet = Self::new_unchecked(buffer);
         packet.check_len()?;
         Ok(packet)
@@ -110,7 +109,7 @@ impl<'a> Packet<'a> {
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Malformed)` if the buffer is smaller than
     /// the header length.
-    pub fn check_len(&self) -> Result<()> {
+    pub fn check_len(&self) -> Result<(), Malformed> {
         let len = self.buffer.len();
         if len < field::HEADER_END {
             Err(Malformed)
@@ -183,7 +182,7 @@ impl<'a> Packet<'a> {
     ///
     /// Yields one label at a time. Pointers are only allowed to point backwards, so
     /// pointer loops end the iteration with an error.
-    pub fn parse_name<'b>(&'b self, mut bytes: &'b [u8]) -> impl Iterator<Item = Result<&'b [u8]>> {
+    pub fn parse_name<'b>(&'b self, mut bytes: &'b [u8]) -> impl Iterator<Item = Result<&'b [u8], Malformed>> {
         let mut packet: &'b [u8] = self.buffer;
 
         iter::from_fn(move || {
@@ -286,7 +285,10 @@ impl<'a> Packet<'a> {
 
 /// Parse part of a name from `bytes`, not following pointers.
 /// Returns the unused part of `bytes`, and the pointer offset if the sequence ends with a pointer.
-fn parse_name_part<'a>(mut bytes: &'a [u8], mut f: impl FnMut(&'a [u8])) -> Result<(&'a [u8], Option<usize>)> {
+fn parse_name_part<'a>(
+    mut bytes: &'a [u8],
+    mut f: impl FnMut(&'a [u8]),
+) -> Result<(&'a [u8], Option<usize>), Malformed> {
     loop {
         let x = *bytes.first().ok_or(Malformed)?;
         bytes = &bytes[1..];
@@ -324,7 +326,7 @@ impl<'a> Question<'a> {
     /// Parse a question from the start of `buffer`.
     ///
     /// Returns the rest of the buffer and the question. Fails if the class is not IN.
-    pub fn parse(buffer: &'a [u8]) -> Result<(&'a [u8], Question<'a>)> {
+    pub fn parse(buffer: &'a [u8]) -> Result<(&'a [u8], Question<'a>), Malformed> {
         let (rest, _) = parse_name_part(buffer, |_| ())?;
         let name = &buffer[..buffer.len() - rest.len()];
 
@@ -372,7 +374,7 @@ pub struct Record<'a> {
 
 impl<'a> RecordData<'a> {
     /// Parse record data of the given type.
-    pub fn parse(type_: Type, data: &'a [u8]) -> Result<RecordData<'a>> {
+    pub fn parse(type_: Type, data: &'a [u8]) -> Result<RecordData<'a>, Malformed> {
         match type_ {
             #[cfg(feature = "ipv4")]
             Type::A => Ok(RecordData::A(Ipv4Addr::from(
@@ -408,7 +410,7 @@ impl<'a> Record<'a> {
     /// Parse a record from the start of `buffer`.
     ///
     /// Returns the rest of the buffer and the record. Fails if the class is not IN.
-    pub fn parse(buffer: &'a [u8]) -> Result<(&'a [u8], Record<'a>)> {
+    pub fn parse(buffer: &'a [u8]) -> Result<(&'a [u8], Record<'a>), Malformed> {
         let (rest, _) = parse_name_part(buffer, |_| ())?;
         let name = &buffer[..buffer.len() - rest.len()];
 
@@ -493,7 +495,7 @@ mod test {
     }
 
     impl<'a> Parsed<'a> {
-        fn parse(bytes: &'a mut [u8]) -> Result<Self> {
+        fn parse(bytes: &'a mut [u8]) -> Result<Self, Malformed> {
             let mut questions = Vec::new();
             let mut answers = Vec::new();
             let mut authorities = Vec::new();

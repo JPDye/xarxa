@@ -6,7 +6,6 @@
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::Result;
 use crate::error::Malformed;
 use crate::wire::Ipv6Addr;
 use crate::wire::icmpv6::{Packet, field};
@@ -170,7 +169,7 @@ impl<'a> AddressRecord<'a> {
     ///
     /// [new_unchecked]: #method.new_unchecked
     /// [check_len]: #method.check_len
-    pub fn new_checked(buffer: &'a mut [u8]) -> Result<Self> {
+    pub fn new_checked(buffer: &'a mut [u8]) -> Result<Self, Malformed> {
         let packet = Self::new_unchecked(buffer);
         packet.check_len()?;
         Ok(packet)
@@ -178,7 +177,7 @@ impl<'a> AddressRecord<'a> {
 
     /// Ensure that no accessor method will panic if called.
     /// Returns `Err(Malformed)` if the buffer is too short.
-    pub fn check_len(&self) -> Result<()> {
+    pub fn check_len(&self) -> Result<(), Malformed> {
         let len = self.buffer.len();
         if len < field::RECORD_MCAST_ADDR.end {
             Err(Malformed)
