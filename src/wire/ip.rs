@@ -261,15 +261,29 @@ pub enum Cidr {
 impl Cidr {
     /// Create a CIDR block from the given address and prefix length.
     ///
+    /// Return `None` if the prefix length is invalid for the given address: larger
+    /// than 32 for an IPv4 address, or larger than 128 for an IPv6 one.
+    pub const fn try_new(addr: Address, prefix_len: u8) -> Option<Self> {
+        match addr {
+            #[cfg(feature = "ipv4")]
+            Address::V4(addr) => match Ipv4Cidr::try_new(addr, prefix_len) {
+                Some(cidr) => Some(Cidr::V4(cidr)),
+                None => None,
+            },
+            #[cfg(feature = "ipv6")]
+            Address::V6(addr) => match Ipv6Cidr::try_new(addr, prefix_len) {
+                Some(cidr) => Some(Cidr::V6(cidr)),
+                None => None,
+            },
+        }
+    }
+
+    /// Create a CIDR block from the given address and prefix length.
+    ///
     /// # Panics
     /// This function panics if the given prefix length is invalid for the given address.
     pub const fn new(addr: Address, prefix_len: u8) -> Cidr {
-        match addr {
-            #[cfg(feature = "ipv4")]
-            Address::V4(addr) => Cidr::V4(Ipv4Cidr::new(addr, prefix_len)),
-            #[cfg(feature = "ipv6")]
-            Address::V6(addr) => Cidr::V6(Ipv6Cidr::new(addr, prefix_len)),
-        }
+        Self::try_new(addr, prefix_len).unwrap()
     }
 
     /// Return the IP address of this CIDR block.
@@ -365,12 +379,7 @@ impl FromStr for Cidr {
         };
         let addr = s[..idx].parse().map_err(|_| ParseError)?;
         let prefix_len = s[idx + 1..].parse().map_err(|_| ParseError)?;
-        match addr {
-            #[cfg(feature = "ipv4")]
-            Address::V4(addr) => Ipv4Cidr::try_new(addr, prefix_len).ok_or(ParseError).map(Self::V4),
-            #[cfg(feature = "ipv6")]
-            Address::V6(addr) => Ipv6Cidr::try_new(addr, prefix_len).ok_or(ParseError).map(Self::V6),
-        }
+        Self::try_new(addr, prefix_len).ok_or(ParseError)
     }
 }
 
