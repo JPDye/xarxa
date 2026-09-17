@@ -20,6 +20,22 @@ impl fmt::Display for Malformed {
 
 impl core::error::Error for Malformed {}
 
+/// Parsing a string failed.
+///
+/// Returned by the [`FromStr`](core::str::FromStr) implementations of the
+/// address, CIDR and socket address types.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseError;
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("parse error")
+    }
+}
+
+impl core::error::Error for ParseError {}
+
 /// A table, slab or queue has no room for another item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]

@@ -1,7 +1,7 @@
-use core::convert::From;
 use core::fmt;
+use core::{convert::From, net::AddrParseError, str::FromStr};
 
-use crate::error::Malformed;
+use crate::error::{Malformed, ParseError};
 #[cfg(feature = "ipv4")]
 use crate::wire::{Ipv4Addr, Ipv4AddrExt, Ipv4Cidr};
 #[cfg(feature = "ipv6")]
@@ -228,6 +228,25 @@ impl fmt::Display for Address {
     }
 }
 
+impl FromStr for Address {
+    type Err = AddrParseError;
+
+    #[cfg(all(feature = "ipv4", feature = "ipv6"))]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse().map(Self::V6).or_else(|_| s.parse().map(Self::V4))
+    }
+
+    #[cfg(all(feature = "ipv4", not(feature = "ipv6")))]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse().map(Self::V4)
+    }
+
+    #[cfg(all(not(feature = "ipv4"), feature = "ipv6"))]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse().map(Self::V6)
+    }
+}
+
 /// A specification of a CIDR block, containing an address and a variable-length
 /// subnet masking prefix length.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -242,15 +261,29 @@ pub enum Cidr {
 impl Cidr {
     /// Create a CIDR block from the given address and prefix length.
     ///
+    /// Return `None` if the prefix length is invalid for the given address: larger
+    /// than 32 for an IPv4 address, or larger than 128 for an IPv6 one.
+    pub const fn try_new(addr: Address, prefix_len: u8) -> Option<Self> {
+        match addr {
+            #[cfg(feature = "ipv4")]
+            Address::V4(addr) => match Ipv4Cidr::try_new(addr, prefix_len) {
+                Some(cidr) => Some(Cidr::V4(cidr)),
+                None => None,
+            },
+            #[cfg(feature = "ipv6")]
+            Address::V6(addr) => match Ipv6Cidr::try_new(addr, prefix_len) {
+                Some(cidr) => Some(Cidr::V6(cidr)),
+                None => None,
+            },
+        }
+    }
+
+    /// Create a CIDR block from the given address and prefix length.
+    ///
     /// # Panics
     /// This function panics if the given prefix length is invalid for the given address.
     pub const fn new(addr: Address, prefix_len: u8) -> Cidr {
-        match addr {
-            #[cfg(feature = "ipv4")]
-            Address::V4(addr) => Cidr::V4(Ipv4Cidr::new(addr, prefix_len)),
-            #[cfg(feature = "ipv6")]
-            Address::V6(addr) => Cidr::V6(Ipv6Cidr::new(addr, prefix_len)),
-        }
+        Self::try_new(addr, prefix_len).unwrap()
     }
 
     /// Return the IP address of this CIDR block.
@@ -337,6 +370,19 @@ impl fmt::Display for Cidr {
     }
 }
 
+impl FromStr for Cidr {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let Some(idx) = s.find('/') else {
+            return Err(ParseError);
+        };
+        let addr = s[..idx].parse().map_err(|_| ParseError)?;
+        let prefix_len = s[idx + 1..].parse().map_err(|_| ParseError)?;
+        Self::try_new(addr, prefix_len).ok_or(ParseError)
+    }
+}
+
 /// An IP address and a port.
 ///
 /// `SocketAddr` names one peer: both the address and the port are meant to be
@@ -409,7 +455,44 @@ impl<T: Into<Address>> From<(T, u16)> for SocketAddr {
 
 impl fmt::Display for SocketAddr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}:{}", self.addr, self.port)
+        match self.addr {
+            #[cfg(feature = "ipv4")]
+            Address::V4(addr) => write!(f, "{}:{}", addr, self.port),
+            #[cfg(feature = "ipv6")]
+            Address::V6(addr) => write!(f, "[{}]:{}", addr, self.port),
+        }
+    }
+}
+
+impl FromStr for SocketAddr {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        #[cfg(feature = "ipv6")]
+        if s.starts_with('[') {
+            let Some(idx) = s.find(']') else {
+                return Err(ParseError);
+            };
+            let addr = Address::V6(s[1..idx].parse().map_err(|_| ParseError)?);
+            if s.get(idx + 1..).is_none_or(|substr| !substr.starts_with(":")) {
+                return Err(ParseError);
+            }
+            let port = s[idx + 2..].parse().map_err(|_| ParseError)?;
+            return Ok(Self { addr, port });
+        }
+
+        #[cfg(feature = "ipv4")]
+        {
+            let Some(idx) = s.find(':') else {
+                return Err(ParseError);
+            };
+            let addr = Address::V4(s[..idx].parse().map_err(|_| ParseError)?);
+            let port = s[idx + 1..].parse().map_err(|_| ParseError)?;
+            Ok(Self { addr, port })
+        }
+
+        #[cfg(not(feature = "ipv4"))]
+        Err(ParseError)
     }
 }
 
@@ -493,10 +576,12 @@ impl<T: Into<Address>> From<(T, u16)> for ListenSocketAddr {
 
 impl fmt::Display for ListenSocketAddr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        if let Some(addr) = self.addr {
-            write!(f, "{}:{}", addr, self.port)
-        } else {
-            write!(f, "*:{}", self.port)
+        match self.addr {
+            #[cfg(feature = "ipv4")]
+            Some(Address::V4(addr)) => write!(f, "{}:{}", addr, self.port),
+            #[cfg(feature = "ipv6")]
+            Some(Address::V6(addr)) => write!(f, "[{}]:{}", addr, self.port),
+            None => write!(f, "*:{}", self.port),
         }
     }
 }
@@ -657,5 +742,73 @@ pub(crate) mod test {
             None,
             IpAddr::from(Ipv6Addr::new(0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0, 1)).prefix_len()
         );
+    }
+
+    #[cfg(feature = "ipv4")]
+    #[test]
+    fn test_print_ipv4_cidr() {
+        let cidr = Cidr::new(Ipv4Addr::LOCALHOST.into(), 8);
+        assert_eq!("127.0.0.1/8", format!("{cidr}"));
+    }
+
+    #[cfg(feature = "ipv6")]
+    #[test]
+    fn test_print_ipv6_cidr() {
+        let cidr = Cidr::new(Ipv6Addr::LOCALHOST.into(), 128);
+        assert_eq!("::1/128", format!("{cidr}"));
+    }
+
+    #[cfg(feature = "ipv4")]
+    #[test]
+    fn test_parse_ipv4_cidr() {
+        let cidr = Cidr::new(Ipv4Addr::LOCALHOST.into(), 8);
+        assert_eq!(cidr, "127.0.0.1/8".parse().unwrap());
+    }
+
+    #[cfg(feature = "ipv6")]
+    #[test]
+    fn test_parse_ipv6_cidr() {
+        let cidr = Cidr::new(Ipv6Addr::LOCALHOST.into(), 128);
+        assert_eq!(cidr, "::1/128".parse().unwrap());
+    }
+
+    #[cfg(feature = "ipv4")]
+    #[test]
+    fn test_print_ipv4_endpoint() {
+        let endpoint = SocketAddr {
+            addr: Ipv4Addr::LOCALHOST.into(),
+            port: 8080,
+        };
+        assert_eq!("127.0.0.1:8080", format!("{endpoint}"));
+    }
+
+    #[cfg(feature = "ipv6")]
+    #[test]
+    fn test_print_ipv6_endpoint() {
+        let endpoint = SocketAddr {
+            addr: Ipv6Addr::LOCALHOST.into(),
+            port: 8080,
+        };
+        assert_eq!("[::1]:8080", format!("{endpoint}"));
+    }
+
+    #[cfg(feature = "ipv4")]
+    #[test]
+    fn test_parse_ipv4_endpoint() {
+        let endpoint = SocketAddr {
+            addr: Ipv4Addr::LOCALHOST.into(),
+            port: 8080,
+        };
+        assert_eq!(endpoint, "127.0.0.1:8080".parse().unwrap());
+    }
+
+    #[cfg(feature = "ipv6")]
+    #[test]
+    fn test_parse_ipv6_endpoint() {
+        let endpoint = SocketAddr {
+            addr: Ipv6Addr::LOCALHOST.into(),
+            port: 8080,
+        };
+        assert_eq!(endpoint, "[::1]:8080".parse().unwrap());
     }
 }
