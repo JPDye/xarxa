@@ -108,10 +108,10 @@ impl<'d, T> RingBuffer<'d, T> {
 impl<T> RingBuffer<'_, T> {
     /// Call `f` with a single buffer element, and enqueue the element if `f`
     /// returns successfully, or return `Err(Full)` if the buffer is full.
-    pub fn enqueue_one_with<'b, R, E, F>(&'b mut self, f: F) -> Result<Result<R, E>, Full>
-    where
-        F: FnOnce(&'b mut T) -> Result<R, E>,
-    {
+    pub fn enqueue_one_with<'b, R, E>(
+        &'b mut self,
+        f: impl FnOnce(&'b mut T) -> Result<R, E>,
+    ) -> Result<Result<R, E>, Full> {
         if self.is_full() {
             return Err(Full);
         }
@@ -134,10 +134,10 @@ impl<T> RingBuffer<'_, T> {
 
     /// Call `f` with a single buffer element, and dequeue the element if `f`
     /// returns successfully, or return `Err(Empty)` if the buffer is empty.
-    pub fn dequeue_one_with<'b, R, E, F>(&'b mut self, f: F) -> Result<Result<R, E>, Empty>
-    where
-        F: FnOnce(&'b mut T) -> Result<R, E>,
-    {
+    pub fn dequeue_one_with<'b, R, E>(
+        &'b mut self,
+        f: impl FnOnce(&'b mut T) -> Result<R, E>,
+    ) -> Result<Result<R, E>, Empty> {
         if self.is_empty() {
             return Err(Empty);
         }
@@ -170,10 +170,7 @@ impl<T> RingBuffer<'_, T> {
     /// # Panics
     /// This function panics if the amount of elements returned by `f` is larger
     /// than the size of the slice passed into it.
-    pub fn enqueue_many_with<'b, R, F>(&'b mut self, f: F) -> (usize, R)
-    where
-        F: FnOnce(&'b mut [T]) -> (usize, R),
-    {
+    pub fn enqueue_many_with<'b, R>(&'b mut self, f: impl FnOnce(&'b mut [T]) -> (usize, R)) -> (usize, R) {
         if self.length == 0 {
             // Ring is currently empty. Reset `read_at` to optimize
             // for contiguous space.
@@ -228,10 +225,7 @@ impl<T> RingBuffer<'_, T> {
     /// # Panics
     /// This function panics if the amount of elements returned by `f` is larger
     /// than the size of the slice passed into it.
-    pub fn dequeue_many_with<'b, R, F>(&'b mut self, f: F) -> (usize, R)
-    where
-        F: FnOnce(&'b mut [T]) -> (usize, R),
-    {
+    pub fn dequeue_many_with<'b, R>(&'b mut self, f: impl FnOnce(&'b mut [T]) -> (usize, R)) -> (usize, R) {
         let capacity = self.capacity();
         let max_size = cmp::min(self.len(), capacity - self.read_at);
         let (size, result) = f(&mut self.storage[self.read_at..self.read_at + max_size]);

@@ -679,7 +679,7 @@ pub(crate) mod test {
 
     #[test]
     fn to_prefix_len_ipv4() {
-        fn test_eq<A: Into<Address>>(prefix_len: u8, mask: A) {
+        fn test_eq(prefix_len: u8, mask: impl Into<Address>) {
             assert_eq!(Some(prefix_len), mask.into().prefix_len());
         }
 
@@ -725,7 +725,7 @@ pub(crate) mod test {
 
     #[test]
     fn to_prefix_len_ipv6() {
-        fn test_eq<A: Into<Address>>(prefix_len: u8, mask: A) {
+        fn test_eq(prefix_len: u8, mask: impl Into<Address>) {
             assert_eq!(Some(prefix_len), mask.into().prefix_len());
         }
 

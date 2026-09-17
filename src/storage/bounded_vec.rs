@@ -26,7 +26,7 @@ impl<T, const N: usize> BoundedVec<T, N> {
     }
 
     /// Append every item of `iter`, stopping at the first that does not fit.
-    pub fn try_extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> Result<(), Full> {
+    pub fn try_extend(&mut self, iter: impl IntoIterator<Item = T>) -> Result<(), Full> {
         for item in iter {
             self.push(item).map_err(|_| Full)?;
         }
@@ -57,7 +57,7 @@ impl<T, const N: usize> BoundedVec<T, N> {
         self.inner.clear()
     }
 
-    pub fn retain<F: FnMut(&T) -> bool>(&mut self, f: F) {
+    pub fn retain(&mut self, f: impl FnMut(&T) -> bool) {
         self.inner.retain(f)
     }
 

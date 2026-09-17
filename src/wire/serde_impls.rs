@@ -379,11 +379,7 @@ mod tests {
 
     // Helper function to work around type inference
     #[track_caller]
-    fn deser_using<T, U, F, E>(_: T, input: U, f: F) -> T
-    where
-        F: FnOnce(U) -> Result<T, E>,
-        E: Debug,
-    {
+    fn deser_using<T, U, E: Debug>(_: T, input: U, f: impl FnOnce(U) -> Result<T, E>) -> T {
         f(input).unwrap()
     }
 

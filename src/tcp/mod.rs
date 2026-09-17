@@ -1849,10 +1849,11 @@ impl<'d> TcpSocketState<'d> {
         blocks.map(|block| block.map(|(l, r)| (l.0 as u32, r.0 as u32)))
     }
 
-    pub(crate) fn dispatch<F, E>(&mut self, cx: &mut TxContext<'_, '_>, emit: F) -> Result<(), E>
-    where
-        F: FnOnce(&mut TxContext<'_, '_>, (Option<EgressRoute>, IpAddr, IpAddr, u8, TcpRepr)) -> Result<(), E>,
-    {
+    pub(crate) fn dispatch<E>(
+        &mut self,
+        cx: &mut TxContext<'_, '_>,
+        emit: impl FnOnce(&mut TxContext<'_, '_>, (Option<EgressRoute>, IpAddr, IpAddr, u8, TcpRepr)) -> Result<(), E>,
+    ) -> Result<(), E> {
         if self.tuple.is_none() {
             return Ok(());
         }
@@ -2895,10 +2896,7 @@ impl<'d> TcpSocket<'_, 'd> {
         !self.inner().rx_buffer.is_empty()
     }
 
-    fn send_impl<'b, F, R>(&'b mut self, f: F) -> Result<R, SendError>
-    where
-        F: FnOnce(&'b mut SocketBuffer<'d>) -> (usize, R),
-    {
+    fn send_impl<'b, R>(&'b mut self, f: impl FnOnce(&'b mut SocketBuffer<'d>) -> (usize, R)) -> Result<R, SendError> {
         if !self.may_send() {
             return Err(SendError::InvalidState);
         }
@@ -2935,10 +2933,7 @@ impl<'d> TcpSocket<'_, 'd> {
     ///
     /// This function returns `Err(Error::Illegal)` if the transmit half of
     /// the connection is not open; see [may_send](#method.may_send).
-    pub fn send<'b, F, R>(&'b mut self, f: F) -> Result<R, SendError>
-    where
-        F: FnOnce(&'b mut [u8]) -> (usize, R),
-    {
+    pub fn send<'b, R>(&'b mut self, f: impl FnOnce(&'b mut [u8]) -> (usize, R)) -> Result<R, SendError> {
         self.send_impl(|tx_buffer| tx_buffer.enqueue_many_with(f))
     }
 
@@ -2969,10 +2964,7 @@ impl<'d> TcpSocket<'_, 'd> {
         Ok(())
     }
 
-    fn recv_impl<'b, F, R>(&'b mut self, f: F) -> Result<R, RecvError>
-    where
-        F: FnOnce(&'b mut SocketBuffer<'d>) -> (usize, R),
-    {
+    fn recv_impl<'b, R>(&'b mut self, f: impl FnOnce(&'b mut SocketBuffer<'d>) -> (usize, R)) -> Result<R, RecvError> {
         self.recv_error_check()?;
 
         let s = self.inner_mut();
@@ -2995,10 +2987,7 @@ impl<'d> TcpSocket<'_, 'd> {
     ///
     /// In all other cases, `Err(Error::Illegal)` is returned and previously received data (if any)
     /// may be incomplete (truncated).
-    pub fn recv<'b, F, R>(&'b mut self, f: F) -> Result<R, RecvError>
-    where
-        F: FnOnce(&'b mut [u8]) -> (usize, R),
-    {
+    pub fn recv<'b, R>(&'b mut self, f: impl FnOnce(&'b mut [u8]) -> (usize, R)) -> Result<R, RecvError> {
         self.recv_impl(|rx_buffer| rx_buffer.dequeue_many_with(f))
     }
 
@@ -3224,10 +3213,7 @@ mod test {
     }
 
     #[track_caller]
-    fn recv<F>(socket: &mut TestSocket, timestamp: Instant, mut f: F)
-    where
-        F: FnMut(Result<TcpRepr, ()>),
-    {
+    fn recv(socket: &mut TestSocket, timestamp: Instant, mut f: impl FnMut(Result<TcpRepr, ()>)) {
         socket.stack.inner.now = timestamp;
 
         let mut sent = 0;

@@ -785,7 +785,7 @@ impl IfaceState<'_> {
     }
 
     #[inline(never)] // helps code size
-    pub(crate) fn has_ip_addr<T: Into<IpAddr>>(&self, addr: T) -> bool {
+    pub(crate) fn has_ip_addr(&self, addr: impl Into<IpAddr>) -> bool {
         let addr = addr.into();
         self.cidrs().any(|probe| probe.address() == addr)
     }
@@ -906,7 +906,7 @@ impl IfaceState<'_> {
     }
 
     /// Check whether the interface listens to given destination multicast IP address.
-    pub(crate) fn has_multicast_group<T: Into<IpAddr>>(&self, addr: T) -> bool {
+    pub(crate) fn has_multicast_group(&self, addr: impl Into<IpAddr>) -> bool {
         let addr = addr.into();
 
         #[cfg(feature = "multicast")]

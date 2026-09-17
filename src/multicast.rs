@@ -76,7 +76,7 @@ impl State {
         }
     }
 
-    pub(crate) fn has_multicast_group<T: Into<IpAddr>>(&self, addr: T) -> bool {
+    pub(crate) fn has_multicast_group(&self, addr: impl Into<IpAddr>) -> bool {
         // Return false if we don't have the multicast group,
         // or we're leaving it.
         match self.get(&addr.into()) {
@@ -167,7 +167,7 @@ impl Iface<'_, '_> {
     ///
     /// Errors:
     /// - `Unaddressable` if the address is not a multicast address.
-    pub fn join_multicast_group<T: Into<IpAddr>>(&mut self, addr: T) -> Result<(), MulticastError> {
+    pub fn join_multicast_group(&mut self, addr: impl Into<IpAddr>) -> Result<(), MulticastError> {
         let res = self.state_mut().join_multicast_group(addr);
         #[cfg(feature = "medium-ethernet")]
         self.state_mut().sync_multicast_filter();
@@ -183,7 +183,7 @@ impl Iface<'_, '_> {
     ///
     /// Errors:
     /// - `Unaddressable` if the address is not a multicast address.
-    pub fn leave_multicast_group<T: Into<IpAddr>>(&mut self, addr: T) -> Result<(), MulticastError> {
+    pub fn leave_multicast_group(&mut self, addr: impl Into<IpAddr>) -> Result<(), MulticastError> {
         let res = self.state_mut().leave_multicast_group(addr);
         #[cfg(feature = "medium-ethernet")]
         self.state_mut().sync_multicast_filter();
@@ -195,14 +195,14 @@ impl Iface<'_, '_> {
     /// Besides the joined groups, this is true for the groups every host is a
     /// member of: the IPv4 all systems group, the IPv6 all nodes group, and the
     /// IPv6 solicited node group of each address assigned to the interface.
-    pub fn has_multicast_group<T: Into<IpAddr>>(&self, addr: T) -> bool {
+    pub fn has_multicast_group(&self, addr: impl Into<IpAddr>) -> bool {
         self.state().has_multicast_group(addr)
     }
 }
 
 impl IfaceState<'_> {
     /// Add an address to a list of subscribed multicast IP addresses.
-    pub(crate) fn join_multicast_group<T: Into<IpAddr>>(&mut self, addr: T) -> Result<(), MulticastError> {
+    pub(crate) fn join_multicast_group(&mut self, addr: impl Into<IpAddr>) -> Result<(), MulticastError> {
         let addr = addr.into();
         if !addr.is_multicast() {
             return Err(MulticastError::Unaddressable);
@@ -223,7 +223,7 @@ impl IfaceState<'_> {
     }
 
     /// Remove an address from the subscribed multicast IP addresses.
-    pub(crate) fn leave_multicast_group<T: Into<IpAddr>>(&mut self, addr: T) -> Result<(), MulticastError> {
+    pub(crate) fn leave_multicast_group(&mut self, addr: impl Into<IpAddr>) -> Result<(), MulticastError> {
         let addr = addr.into();
         if !addr.is_multicast() {
             return Err(MulticastError::Unaddressable);
