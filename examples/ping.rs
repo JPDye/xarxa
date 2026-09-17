@@ -126,8 +126,8 @@ fn main() {
                     reply.data_len,
                     target,
                     reply.seq,
-                    rtt.total_micros() / 1000,
-                    rtt.total_micros() % 1000,
+                    rtt.as_micros() / 1000,
+                    rtt.as_micros() % 1000,
                 );
             }
         }
@@ -175,7 +175,7 @@ fn send_request(socket: &mut xarxa::raw::RawSocket<'_, '_>, target: IpAddr, iden
                 icmp.set_msg_code(0);
                 icmp.set_echo_ident(ident);
                 icmp.set_echo_seq_no(seq);
-                icmp.data_mut()[..8].copy_from_slice(&now.total_micros().to_le_bytes());
+                icmp.data_mut()[..8].copy_from_slice(&now.as_micros().to_le_bytes());
                 icmp.fill_checksum();
                 total
             })
@@ -202,7 +202,7 @@ fn send_request(socket: &mut xarxa::raw::RawSocket<'_, '_>, target: IpAddr, iden
                 icmp.set_msg_code(0);
                 icmp.set_echo_ident(ident);
                 icmp.set_echo_seq_no(seq);
-                icmp.payload_mut()[..8].copy_from_slice(&now.total_micros().to_le_bytes());
+                icmp.payload_mut()[..8].copy_from_slice(&now.as_micros().to_le_bytes());
                 icmp.fill_checksum(&src, &dst);
                 total
             })

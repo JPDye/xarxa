@@ -124,7 +124,7 @@ impl Controller for Cubic {
 
         // Elapsed time since the start of the recovery phase, in microseconds so the
         // cubic curve still advances between ACKs on sub-millisecond-RTT links.
-        let t = now.total_micros() - recovery_start.total_micros();
+        let t = now.as_micros() - recovery_start.as_micros();
         if t < 0 {
             return;
         }

@@ -178,7 +178,7 @@ fn max_resp_code_to_duration(value: u8) -> Duration {
 }
 
 const fn duration_to_max_resp_code(duration: Duration) -> u8 {
-    let decisecs = duration.total_millis() / 100;
+    let decisecs = duration.as_millis() / 100;
     if decisecs < 128 {
         decisecs as u8
     } else if decisecs < 31744 {

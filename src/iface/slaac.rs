@@ -614,7 +614,7 @@ mod test {
         pub const ROUTE: Route = Route {
             cidr: Ipv6Cidr::new(Ipv6Addr::UNSPECIFIED, 0),
             via_router: SOURCE,
-            valid_until: Instant::from_millis_const(100000),
+            valid_until: Instant::from_millis(100000),
         };
     }
     use mock::*;

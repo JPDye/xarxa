@@ -303,13 +303,13 @@ impl<'a> NdiscOption<'a> {
     /// Set the valid lifetime of the prefix.
     #[inline]
     pub fn set_valid_lifetime(&mut self, time: Duration) {
-        NetworkEndian::write_u32(&mut self.buffer[field::VALID_LT], time.secs() as u32);
+        NetworkEndian::write_u32(&mut self.buffer[field::VALID_LT], time.as_secs() as u32);
     }
 
     /// Set the preferred lifetime of the prefix.
     #[inline]
     pub fn set_preferred_lifetime(&mut self, time: Duration) {
-        NetworkEndian::write_u32(&mut self.buffer[field::PREF_LT], time.secs() as u32);
+        NetworkEndian::write_u32(&mut self.buffer[field::PREF_LT], time.as_secs() as u32);
     }
 
     /// Clear the reserved bits.

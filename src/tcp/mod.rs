@@ -320,7 +320,7 @@ impl RttEstimator {
         if let Some((sent_timestamp, sent_seq)) = self.timestamp
             && seq >= sent_seq
         {
-            self.sample((timestamp - sent_timestamp).total_millis() as u32);
+            self.sample((timestamp - sent_timestamp).as_millis() as u32);
             self.timestamp = None;
         }
     }
@@ -885,7 +885,7 @@ impl<'d> TcpSocketState<'d> {
     #[cfg(feature = "tcp-timestamps")]
     fn timestamp_repr(&self, now: Instant, tsecr: u32) -> Option<TcpTimestampRepr> {
         self.timestamps.then(|| {
-            let tsval = (now.total_millis() as u32).wrapping_add(self.tsval_offset);
+            let tsval = (now.as_millis() as u32).wrapping_add(self.tsval_offset);
             TcpTimestampRepr::new(tsval, tsecr)
         })
     }
@@ -3435,7 +3435,7 @@ mod test {
         s.remote_last_seq = LOCAL_SEQ + 1 + 1;
         s.remote_seq_no = REMOTE_SEQ + 1 + 1;
         s.timer = Timer::Retransmit {
-            expires_at: Instant::from_millis_const(1000),
+            expires_at: Instant::from_millis(1000),
         };
         s
     }
@@ -7983,7 +7983,7 @@ mod test {
             ..RECV_TEMPL
         }));
 
-        let expected_retransmission_instant = s.rtte.retransmission_timeout().total_millis() as i64;
+        let expected_retransmission_instant = s.rtte.retransmission_timeout().as_millis() as i64;
         recv_nothing!(s, time expected_retransmission_instant - 1);
         recv!(s, time expected_retransmission_instant, Ok(TcpRepr {
             seq_number: LOCAL_SEQ + 1,

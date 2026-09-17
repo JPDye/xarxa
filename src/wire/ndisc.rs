@@ -116,19 +116,19 @@ impl<'a> Packet<'a> {
     /// Set the router lifetime field.
     #[inline]
     pub fn set_router_lifetime(&mut self, value: Duration) {
-        NetworkEndian::write_u16(&mut self.buffer[field::ROUTER_LT], value.secs() as u16);
+        NetworkEndian::write_u16(&mut self.buffer[field::ROUTER_LT], value.as_secs() as u16);
     }
 
     /// Set the reachable time field.
     #[inline]
     pub fn set_reachable_time(&mut self, value: Duration) {
-        NetworkEndian::write_u32(&mut self.buffer[field::REACHABLE_TM], value.total_millis() as u32);
+        NetworkEndian::write_u32(&mut self.buffer[field::REACHABLE_TM], value.as_millis() as u32);
     }
 
     /// Set the retransmit time field.
     #[inline]
     pub fn set_retrans_time(&mut self, value: Duration) {
-        NetworkEndian::write_u32(&mut self.buffer[field::RETRANS_TM], value.total_millis() as u32);
+        NetworkEndian::write_u32(&mut self.buffer[field::RETRANS_TM], value.as_millis() as u32);
     }
 }
 

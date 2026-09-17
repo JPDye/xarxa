@@ -657,7 +657,7 @@ impl Server {
                 data: &server_cidr.address().octets(),
             })?;
             if let Some(duration) = reply.lease_duration {
-                let secs = duration.secs().min(u32::MAX as u64) as u32;
+                let secs = duration.as_secs().min(u32::MAX as u64) as u32;
                 options.emit(DhcpOption {
                     kind: field::OPT_IP_LEASE_TIME,
                     data: &secs.to_be_bytes(),
@@ -1382,7 +1382,7 @@ mod test {
             &mut stack,
             &rx,
             Msg::new(DhcpMessageType::Discover, CLIENT2_HW),
-            2 + DECLINE_TIMEOUT.secs() as i64 + 1,
+            2 + DECLINE_TIMEOUT.as_secs() as i64 + 1,
         );
         let mut sent = last_sent(&tx);
         assert_eq!(DhcpPacket::new_checked(&mut sent.dhcp).unwrap().your_ip(), POOL_START);
