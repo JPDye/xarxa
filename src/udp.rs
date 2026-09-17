@@ -54,14 +54,14 @@ define_handle! {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct UdpMetadata {
-    /// The remote endpoint: the sender of an incoming datagram, or the destination of
+    /// The remote address: the sender of an incoming datagram, or the destination of
     /// an outgoing one.
-    pub endpoint: SocketAddr,
+    pub remote_addr: SocketAddr,
     /// The local address: the destination of an incoming datagram (always set), or
     /// the source of an outgoing one. If not set on an outgoing datagram (and the
     /// socket is not bound to a single address), a suitable source address is
     /// selected automatically.
-    pub local_address: Option<IpAddr>,
+    pub local_addr: Option<IpAddr>,
     /// The datagram's [packet metadata](PacketMeta): what the driver attached to an
     /// incoming datagram, or what to attach to an outgoing one (an id to tag it with,
     /// a transmit timestamp to request).
@@ -73,8 +73,8 @@ pub struct UdpMetadata {
 impl<T: Into<SocketAddr>> From<T> for UdpMetadata {
     fn from(value: T) -> Self {
         Self {
-            endpoint: value.into(),
-            local_address: None,
+            remote_addr: value.into(),
+            local_addr: None,
             meta: PacketMeta::default(),
         }
     }
@@ -82,7 +82,7 @@ impl<T: Into<SocketAddr>> From<T> for UdpMetadata {
 
 impl fmt::Display for UdpMetadata {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.endpoint)
+        write!(f, "{}", self.remote_addr)
     }
 }
 
@@ -164,7 +164,7 @@ pub enum RecvError {
     IcmpError {
         /// The kind of error.
         error: IcmpError,
-        /// The remote endpoint the erring packet was sent to.
+        /// The remote address the erring packet was sent to.
         remote: SocketAddr,
     },
 }
@@ -200,7 +200,7 @@ pub(crate) struct UdpSocketState {
     binding: IfaceBinding,
     rx_queue: BoundedDeque<PacketBuf, UDP_RX_QUEUE_COUNT>,
     hop_limit: Option<u8>,
-    /// The last ICMP error reported against this socket, with the remote endpoint
+    /// The last ICMP error reported against this socket, with the remote address
     /// it is about. A single slot: a newer error overwrites an unread older one.
     #[cfg(feature = "icmp-errors")]
     pending_error: Option<(IcmpError, SocketAddr)>,
@@ -313,7 +313,7 @@ impl RecvPacket {
         Self { buf, meta, payload }
     }
 
-    /// The datagram's metadata: remote endpoint and local address.
+    /// The datagram's metadata: remote and local address.
     pub fn meta(&self) -> UdpMetadata {
         self.meta
     }
@@ -371,8 +371,8 @@ fn parse_datagram(buf: &mut PacketBuf) -> (UdpMetadata, Range<usize>) {
     let packet_meta = buf.meta();
     let udp = UdpPacket::new_unchecked(&mut buf[header_len..]);
     let meta = UdpMetadata {
-        endpoint: SocketAddr::new(src_addr, udp.src_port()),
-        local_address: Some(dst_addr),
+        remote_addr: SocketAddr::new(src_addr, udp.src_port()),
+        local_addr: Some(dst_addr),
         meta: packet_meta,
     };
     let payload = header_len + UDP_HEADER_LEN..header_len + udp.len() as usize;
@@ -402,17 +402,17 @@ impl UdpSocket<'_, '_> {
         self.sockets.get_mut(self.index)
     }
 
-    /// Return the bound local endpoint. The address is the filter the bind
+    /// Return the bound local address. The address is the filter the bind
     /// scoped the socket to. A zero port means the socket is not bound.
     #[inline]
-    pub fn local_endpoint(&self) -> ListenSocketAddr {
+    pub fn local_addr(&self) -> ListenSocketAddr {
         self.inner().local
     }
 
-    /// Return the bound remote endpoint. Unspecified parts match any remote:
-    /// a fully unspecified endpoint means an ordinary unconnected socket.
+    /// Return the bound remote address. Unspecified parts match any remote:
+    /// a fully unspecified address means an ordinary unconnected socket.
     #[inline]
-    pub fn remote_endpoint(&self) -> ListenSocketAddr {
+    pub fn remote_addr(&self) -> ListenSocketAddr {
         self.inner().remote
     }
 
@@ -728,7 +728,7 @@ impl UdpSocket<'_, '_> {
     }
 
     /// Take the pending ICMP error, if one has been reported against this socket:
-    /// the kind of error and the remote endpoint the erring packet was sent to.
+    /// the kind of error and the remote address the erring packet was sent to.
     ///
     /// When an ICMP error message arrives, from the network (e.g. port
     /// unreachable) or generated locally when neighbor resolution for a
@@ -738,14 +738,14 @@ impl UdpSocket<'_, '_> {
     /// [`recv`](Self::recv), whichever is called first, and cleared by the report.
     /// The RX waker is woken when an error is recorded.
     ///
-    /// The remote endpoint is attached so that errors on unconnected sockets are
+    /// The remote address is attached so that errors on unconnected sockets are
     /// attributable.
     #[cfg(feature = "icmp-errors")]
     pub fn take_icmp_error(&mut self) -> Option<(IcmpError, SocketAddr)> {
         self.inner_mut().pending_error.take()
     }
 
-    /// Send a datagram to the given remote endpoint, copying the payload from a slice.
+    /// Send a datagram to the given remote address, copying the payload from a slice.
     ///
     /// See [send_with](#method.send_with).
     pub fn send_slice(&mut self, data: &[u8], meta: impl Into<UdpMetadata>) -> Result<(), SendError> {
@@ -757,8 +757,8 @@ impl UdpSocket<'_, '_> {
 
     /// Send a datagram, building the payload in place.
     ///
-    /// The destination is `meta.endpoint`, with unspecified parts defaulted from
-    /// the socket's bound remote endpoint. On a connected socket, sending to
+    /// The destination is `meta.remote_addr`, with unspecified parts defaulted from
+    /// the socket's bound remote address. On a connected socket, sending to
     /// `SocketAddr::UNSPECIFIED` sends to the connected remote. An explicitly
     /// specified destination is honored even on a connected socket.
     ///
@@ -804,22 +804,22 @@ impl UdpSocket<'_, '_> {
         // Default unspecified parts of the destination from the bound remote. Only a
         // concrete remote address is a destination. The per-version wildcards are
         // filters, and leave the destination unspecified.
-        if meta.endpoint.addr.is_unspecified()
+        if meta.remote_addr.addr.is_unspecified()
             && let Some(addr) = remote.concrete_addr()
         {
-            meta.endpoint.addr = addr;
+            meta.remote_addr.addr = addr;
         }
-        if meta.endpoint.port == 0 {
-            meta.endpoint.port = remote.port;
+        if meta.remote_addr.port == 0 {
+            meta.remote_addr.port = remote.port;
         }
-        if !meta.endpoint.is_specified() {
+        if !meta.remote_addr.is_specified() {
             return Err(SendError::Unaddressable);
         }
         // A bind scoped to one IP version cannot send over the other: the replies
         // would arrive on a version its own ingress filter drops.
         if local
             .version()
-            .is_some_and(|version| version != meta.endpoint.addr.version())
+            .is_some_and(|version| version != meta.remote_addr.addr.version())
         {
             return Err(SendError::Unaddressable);
         }
@@ -829,20 +829,20 @@ impl UdpSocket<'_, '_> {
         // room for it.
         let route = self
             .tx
-            .route(binding, &meta.endpoint.addr)
+            .route(binding, &meta.remote_addr.addr)
             .ok_or(SendError::Unaddressable)?;
 
         // Pick the source address: explicit in the metadata, else the socket's bound
         // address (only a concrete one is an address, the wildcards are filters),
         // else one chosen from the destination.
-        let src_addr = match meta.local_address.or(local.concrete_addr()) {
+        let src_addr = match meta.local_addr.or(local.concrete_addr()) {
             Some(addr) => addr,
             None => self
                 .tx
-                .get_source_address_routed(&route, &meta.endpoint.addr)
+                .get_source_address_routed(&route, &meta.remote_addr.addr)
                 .ok_or(SendError::Unaddressable)?,
         };
-        if src_addr.version() != meta.endpoint.addr.version() {
+        if src_addr.version() != meta.remote_addr.addr.version() {
             return Err(SendError::Unaddressable);
         }
         // The source address must be assigned to some interface, not necessarily
@@ -855,7 +855,7 @@ impl UdpSocket<'_, '_> {
 
         // Build the datagram: reserve headroom for the headers below, write the
         // payload, prepend the UDP header.
-        let ip_header_len = match meta.endpoint.addr {
+        let ip_header_len = match meta.remote_addr.addr {
             #[cfg(feature = "ipv4")]
             IpAddr::V4(_) => IPV4_HEADER_LEN,
             #[cfg(feature = "ipv6")]
@@ -886,10 +886,10 @@ impl UdpSocket<'_, '_> {
         {
             let mut udp = UdpPacket::new_unchecked(&mut buf);
             udp.set_src_port(local.port);
-            udp.set_dst_port(meta.endpoint.port);
+            udp.set_dst_port(meta.remote_addr.port);
             udp.set_len(udp_len as u16);
             if !self.tx.checksum_caps(route.iface).udp.tx {
-                udp.fill_checksum(&src_addr, &meta.endpoint.addr);
+                udp.fill_checksum(&src_addr, &meta.remote_addr.addr);
             } else {
                 // A zero checksum means "no checksum" on UDP-over-IPv4, and is what a
                 // device that computes it itself expects to find in the field.
@@ -897,10 +897,10 @@ impl UdpSocket<'_, '_> {
             }
         }
 
-        trace!("udp:{}:{}: sending {} octets", local, meta.endpoint, size);
+        trace!("udp:{}:{}: sending {} octets", local, meta.remote_addr, size);
 
         self.tx
-            .transmit_ip(&route, buf, src_addr, meta.endpoint.addr, IpProtocol::Udp, hop_limit);
+            .transmit_ip(&route, buf, src_addr, meta.remote_addr.addr, IpProtocol::Udp, hop_limit);
         Ok(())
     }
 }
@@ -1176,13 +1176,13 @@ mod test {
         assert!(!socket.is_open());
         assert_eq!(socket.bind((LOCAL_ADDR, LOCAL_PORT), ANY), Ok(()));
         assert_eq!(
-            socket.local_endpoint(),
+            socket.local_addr(),
             ListenSocketAddr {
                 addr: Some(LOCAL_ADDR.into()),
                 port: LOCAL_PORT
             }
         );
-        assert_eq!(socket.remote_endpoint(), ListenSocketAddr::UNSPECIFIED);
+        assert_eq!(socket.remote_addr(), ListenSocketAddr::UNSPECIFIED);
     }
 
     #[test]
@@ -1194,12 +1194,12 @@ mod test {
         let h2 = stack.add_udp_socket().unwrap();
 
         stack.udp_socket(h1).bind(0, ANY).unwrap();
-        let p1 = stack.udp_socket(h1).local_endpoint().port;
+        let p1 = stack.udp_socket(h1).local_addr().port;
         assert!(p1 >= EPHEMERAL_PORT_MIN);
 
         // The second allocation must avoid the first socket's port.
         stack.udp_socket(h2).bind(0, ANY).unwrap();
-        let p2 = stack.udp_socket(h2).local_endpoint().port;
+        let p2 = stack.udp_socket(h2).local_addr().port;
         assert!(p2 >= EPHEMERAL_PORT_MIN);
         assert_ne!(p1, p2);
     }
@@ -1341,11 +1341,11 @@ mod test {
         // The local address is resolved from the routing tables, and an
         // ephemeral port is allocated.
         socket.bind(0, (REMOTE_ADDR, REMOTE_PORT)).unwrap();
-        let local = socket.local_endpoint();
+        let local = socket.local_addr();
         assert_eq!(local.addr, Some(LOCAL_ADDR.into()));
         assert!(local.port >= EPHEMERAL_PORT_MIN);
         assert_eq!(
-            socket.remote_endpoint(),
+            socket.remote_addr(),
             ListenSocketAddr {
                 addr: Some(REMOTE_ADDR.into()),
                 port: REMOTE_PORT
@@ -1548,8 +1548,8 @@ mod test {
             socket.send_slice(
                 b"hi",
                 UdpMetadata {
-                    endpoint: dst,
-                    local_address: Some(OTHER_ADDR.into()),
+                    remote_addr: dst,
+                    local_addr: Some(OTHER_ADDR.into()),
                     meta: PacketMeta::default(),
                 }
             ),
@@ -1559,8 +1559,8 @@ mod test {
             socket.send_slice(
                 b"hi",
                 UdpMetadata {
-                    endpoint: dst,
-                    local_address: Some(LOCAL_ADDR.into()),
+                    remote_addr: dst,
+                    local_addr: Some(LOCAL_ADDR.into()),
                     meta: PacketMeta::default(),
                 }
             ),
@@ -1638,8 +1638,8 @@ mod test {
         assert_eq!(
             packet.meta(),
             UdpMetadata {
-                endpoint: SocketAddr::new(REMOTE_ADDR.into(), REMOTE_PORT),
-                local_address: Some(LOCAL_ADDR.into()),
+                remote_addr: SocketAddr::new(REMOTE_ADDR.into(), REMOTE_PORT),
+                local_addr: Some(LOCAL_ADDR.into()),
                 meta: PacketMeta::default(),
             }
         );
@@ -1655,7 +1655,7 @@ mod test {
 
         let (payload, meta) = socket.peek().unwrap();
         assert_eq!(payload, b"abcdef");
-        assert_eq!(meta.endpoint.port, REMOTE_PORT);
+        assert_eq!(meta.remote_addr.port, REMOTE_PORT);
 
         // Peeking does not dequeue.
         let mut slice = [0; 16];
@@ -1664,7 +1664,7 @@ mod test {
 
         let (len, meta) = socket.recv_slice(&mut slice).unwrap();
         assert_eq!(&slice[..len], b"abcdef");
-        assert_eq!(meta.endpoint, SocketAddr::new(REMOTE_ADDR.into(), REMOTE_PORT));
+        assert_eq!(meta.remote_addr, SocketAddr::new(REMOTE_ADDR.into(), REMOTE_PORT));
         assert_eq!(socket.recv_slice(&mut slice).err(), Some(RecvError::Exhausted));
     }
 
@@ -1848,7 +1848,7 @@ mod test {
         let handle = stack.add_udp_socket().unwrap();
         stack.udp_socket(handle).bind_to_iface(Some(if1)).unwrap();
         stack.udp_socket(handle).bind(0, (REMOTE2_ADDR, REMOTE_PORT)).unwrap();
-        assert_eq!(stack.udp_socket(handle).local_endpoint().addr, Some(LOCAL2_ADDR.into()));
+        assert_eq!(stack.udp_socket(handle).local_addr().addr, Some(LOCAL2_ADDR.into()));
 
         // A remote only reachable through another interface does not resolve.
         stack.udp_socket(handle).close();

@@ -75,7 +75,7 @@ fn main() {
             log::info!("udp: echoing {} octets to {}", packet.payload().len(), meta);
             let data = packet.payload().to_vec();
             drop(packet); // free the buffer before sending
-            socket.send_slice(&data, meta.endpoint).unwrap();
+            socket.send_slice(&data, meta.remote_addr).unwrap();
         }
 
         let timeout = (deadline != Instant::MAX).then(|| {

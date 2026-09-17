@@ -1,4 +1,4 @@
-//! TCP client: bring up a TUN/TAP interface, connect to a remote endpoint, send
+//! TCP client: bring up a TUN/TAP interface, connect to a remote peer, send
 //! a greeting, and print everything received until the remote end closes the
 //! connection.
 //!
@@ -11,7 +11,7 @@
 //! nc -l 1234
 //! ```
 //!
-//! Then run (the remote endpoint defaults to 192.168.69.100:1234):
+//! Then run (the remote peer defaults to 192.168.69.100:1234):
 //!
 //! ```sh
 //! cargo run --example tcp_client -- tap0        # TAP (Ethernet medium)
@@ -79,7 +79,7 @@ fn main() {
     // Local port 0: the stack allocates an ephemeral port.
     let mut socket = stack.tcp_socket(tcp_handle);
     socket.connect(remote, 0).unwrap();
-    log::info!("tcp: connecting to {remote} from {}", socket.local_endpoint().unwrap());
+    log::info!("tcp: connecting to {remote} from {}", socket.local_addr().unwrap());
 
     let mut greeting_sent = false;
     loop {
@@ -109,7 +109,7 @@ fn main() {
                 .unwrap();
         }
 
-        // The remote endpoint closed its transmit half: close ours too.
+        // The remote peer closed its transmit half: close ours too.
         if !socket.may_recv() && socket.may_send() {
             socket.close();
         }

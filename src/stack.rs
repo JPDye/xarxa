@@ -1346,7 +1346,7 @@ impl<'d> Stack<'d> {
     /// Process an ingress TCP segment: validate it and hand it to the matching
     /// socket, transmitting whatever immediate reply the socket state machine
     /// produces (RST, challenge ACK). Connected sockets match first, by full
-    /// 4-tuple, then the listeners, which record SYNs to a listened endpoint in
+    /// 4-tuple, then the listeners, which record SYNs to a listened address in
     /// their accept queues and transmit nothing (the SYN|ACK is sent by the
     /// socket the attempt is accepted into). Unmatched segments are answered
     /// with an RST.
@@ -1394,7 +1394,7 @@ impl<'d> Stack<'d> {
             return;
         }
 
-        // Listeners: a SYN to a listened endpoint is recorded in the accept
+        // Listeners: a SYN to a listened address is recorded in the accept
         // queue of the most specific matching listener (exact local address
         // beats wildcard), and an RST aimed at a recorded SYN cancels it.
         // Nothing is replied, the handshake starts when the connection is
@@ -1518,7 +1518,7 @@ impl<'d> Stack<'d> {
     /// Deliver an ICMP error message to the socket whose packet provoked it.
     ///
     /// `quote` is the offending packet quoted in the error, a packet *we sent*, so
-    /// its source identifies the socket's local endpoint and its destination the
+    /// its source identifies the socket's local address and its destination the
     /// remote. UDP demux scores the sockets like ordinary ingress (most specific
     /// match wins). TCP demux is by exact 4-tuple, and the socket additionally
     /// validates the quoted sequence number against its send window, so blindly
@@ -4090,7 +4090,7 @@ pub(crate) mod test {
         let mut socket = stack.udp_socket(handle);
         let recv = socket.recv().unwrap();
         assert_eq!(&*recv, b"echo?");
-        assert_eq!(recv.meta().endpoint, SocketAddr::new(REMOTE_V6.into(), 4000));
+        assert_eq!(recv.meta().remote_addr, SocketAddr::new(REMOTE_V6.into(), 4000));
     }
 
     #[test]
@@ -5471,7 +5471,7 @@ pub(crate) mod test {
         let mut got = vec![0; 2048];
         let (len, meta) = stack.udp_socket(udp).recv_slice(&mut got).unwrap();
         assert_eq!(&got[..len], &payload[..]);
-        assert_eq!(meta.endpoint, SocketAddr::new(REMOTE_V4.into(), 1000));
+        assert_eq!(meta.remote_addr, SocketAddr::new(REMOTE_V4.into(), 1000));
         assert!(!stack.udp_socket(udp).can_recv());
     }
 

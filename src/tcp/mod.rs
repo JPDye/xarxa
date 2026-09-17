@@ -71,7 +71,7 @@ define_handle! {
 pub enum ListenError {
     InvalidState,
     Unaddressable,
-    /// Another TCP listener is bound to the identical endpoint.
+    /// Another TCP listener is bound to the identical address.
     InUse,
 }
 
@@ -524,7 +524,7 @@ pub(crate) struct TcpSocketState<'d> {
     keep_alive: Option<Duration>,
     /// The time-to-live (IPv4) or hop limit (IPv6) value used in outgoing packets.
     hop_limit: Option<u8>,
-    /// Current 4-tuple (local and remote endpoints).
+    /// Current 4-tuple (local and remote addresses).
     tuple: Option<Tuple>,
     /// The interface the socket is bound to. Zero-sized without `iface-bind`.
     /// User configuration, kept across `reset` like the hop limit.
@@ -1369,7 +1369,7 @@ impl<'d> TcpSocketState<'d> {
             // ACK packets in LAST-ACK state change it to CLOSED.
             (State::LastAck, TcpControl::None) => {
                 if ack_of_fin {
-                    // Clear the remote endpoint, or we'll send an RST there.
+                    // Clear the remote address, or we'll send an RST there.
                     self.set_state(State::Closed);
                     self.tuple = None;
                 } else if ack_len == 0 {
@@ -1726,7 +1726,7 @@ impl<'d> TcpSocketState<'d> {
     /// Return whether to send ACK immediately due to the amount of unacknowledged data.
     ///
     /// RFC 9293 states "An ACK SHOULD be generated for at least every second full-sized segment or
-    /// 2*RMSS bytes of new data (where RMSS is the MSS specified by the TCP endpoint receiving the
+    /// 2*RMSS bytes of new data (where RMSS is the MSS specified by the TCP peer receiving the
     /// segments to be acknowledged, or the default value if not specified) (SHLD-19)."
     ///
     /// Note that the RFC above only says "at least 2*RMSS bytes", which is not a hard requirement.
@@ -1865,7 +1865,7 @@ impl<'d> TcpSocketState<'d> {
             //  1) This socket just transitioned into SYN-SENT.
             //  2) This socket had an empty transmit buffer and some data was added there.
             // Both are similar in that the socket has been quiet for an indefinite
-            // period of time, it isn't anymore, and the local endpoint is talking.
+            // period of time, it isn't anymore, and the local peer is talking.
             // So, we start counting the timeout not from the last received packet
             // but from the first transmitted one.
             self.remote_last_ts = Some(cx.now());
@@ -2015,7 +2015,7 @@ impl<'d> TcpSocketState<'d> {
 
         match self.state {
             // We transmit an RST in the CLOSED state. If we ended up in the CLOSED state
-            // with a specified endpoint, it means that the socket was aborted.
+            // with a specified address, it means that the socket was aborted.
             State::Closed => {
                 repr.control = TcpControl::Rst;
             }
@@ -2498,11 +2498,11 @@ impl<'d> TcpSocket<'_, 'd> {
     /// A socket with a timeout duration set will abort the connection if either of the following
     /// occurs:
     ///
-    ///   * After a [connect](#method.connect) call, the remote endpoint does not respond within
+    ///   * After a [connect](#method.connect) call, the remote peer does not respond within
     ///     the specified duration;
     ///   * After establishing a connection, there is data in the transmit buffer and the remote
-    ///     endpoint exceeds the specified duration between any two packets it sends;
-    ///   * After enabling [keep-alive](#method.set_keep_alive), the remote endpoint exceeds
+    ///     peer exceeds the specified duration between any two packets it sends;
+    ///   * After enabling [keep-alive](#method.set_keep_alive), the remote peer exceeds
     ///     the specified duration between any two packets it sends.
     pub fn set_timeout(&mut self, duration: Option<Duration>) {
         self.inner_mut().timeout = duration
@@ -2544,9 +2544,9 @@ impl<'d> TcpSocket<'_, 'd> {
     /// every time it receives no communication during that interval. As a result, three things
     /// may happen:
     ///
-    ///   * The remote endpoint is fine and answers with an ACK packet.
-    ///   * The remote endpoint has rebooted and answers with an RST packet.
-    ///   * The remote endpoint has crashed and does not answer.
+    ///   * The remote peer is fine and answers with an ACK packet.
+    ///   * The remote peer has rebooted and answers with an RST packet.
+    ///   * The remote peer has crashed and does not answer.
     ///
     /// The keep-alive functionality together with the timeout functionality allows to react
     /// to these error conditions.
@@ -2618,15 +2618,15 @@ impl<'d> TcpSocket<'_, 'd> {
         self.inner().binding.iface()
     }
 
-    /// Return the local endpoint, or None if not connected.
+    /// Return the local address, or None if not connected.
     #[inline]
-    pub fn local_endpoint(&self) -> Option<SocketAddr> {
+    pub fn local_addr(&self) -> Option<SocketAddr> {
         Some(self.inner().tuple?.local)
     }
 
-    /// Return the remote endpoint, or None if not connected.
+    /// Return the remote address, or None if not connected.
     #[inline]
-    pub fn remote_endpoint(&self) -> Option<SocketAddr> {
+    pub fn remote_addr(&self) -> Option<SocketAddr> {
         Some(self.inner().tuple?.remote)
     }
 
@@ -2636,9 +2636,9 @@ impl<'d> TcpSocket<'_, 'd> {
         self.inner().state
     }
 
-    /// Connect to a given endpoint.
+    /// Connect to a given remote address.
     ///
-    /// The local endpoint may be left mostly unspecified: a local port of zero
+    /// The local address may be left mostly unspecified: a local port of zero
     /// means "allocate an ephemeral port" (a free port in the 49152..=65535
     /// range, picked at a random starting point), and the local address, if not
     /// provided, is selected by the stack from the remote address. So the
@@ -2652,24 +2652,24 @@ impl<'d> TcpSocket<'_, 'd> {
     /// tuple, so distinct tuples are never ambiguous. Sharing a port with a
     /// listener is fine too, since connected sockets are matched before
     /// listeners. Ephemeral allocation applies the same rule, and an explicit
-    /// local endpoint that would duplicate another socket's tuple is rejected
+    /// local address that would duplicate another socket's tuple is rejected
     /// with `Err(ConnectError::InUse)`.
     ///
     /// This function returns an error if the socket was open (see
     /// [is_open](#method.is_open)). It also returns an error if the remote port
     /// is zero, or if the remote address is unspecified.
-    pub fn connect<T, U>(&mut self, remote_endpoint: T, local_endpoint: U) -> Result<(), ConnectError>
-    where
-        T: Into<SocketAddr>,
-        U: Into<ListenSocketAddr>,
-    {
-        let remote_endpoint: SocketAddr = remote_endpoint.into();
-        let local: ListenSocketAddr = local_endpoint.into();
+    pub fn connect(
+        &mut self,
+        remote: impl Into<SocketAddr>,
+        local: impl Into<ListenSocketAddr>,
+    ) -> Result<(), ConnectError> {
+        let remote: SocketAddr = remote.into();
+        let local: ListenSocketAddr = local.into();
 
         if self.is_open() {
             return Err(ConnectError::InvalidState);
         }
-        if remote_endpoint.port == 0 || remote_endpoint.addr.is_unspecified() {
+        if remote.port == 0 || remote.addr.is_unspecified() {
             return Err(ConnectError::Unaddressable);
         }
 
@@ -2678,43 +2678,37 @@ impl<'d> TcpSocket<'_, 'd> {
         // Resolve the local address up front: conflicts are decided on the full,
         // concrete 4-tuple. An unspecified local address is selected from the
         // remote like a missing one, but restricts the IP version first.
-        let local_addr = match local.concrete_addr() {
+        let local_ip = match local.concrete_addr() {
             Some(addr) => addr,
             None => {
                 if let Some(version) = local.version()
-                    && version != remote_endpoint.addr.version()
+                    && version != remote.addr.version()
                 {
                     return Err(ConnectError::Unaddressable);
                 }
                 self.tx
-                    .get_source_address(binding, &remote_endpoint.addr)
+                    .get_source_address(binding, &remote.addr)
                     .ok_or(ConnectError::Unaddressable)?
             }
         };
-        let mut local_endpoint = SocketAddr::new(local_addr, local.port);
+        let mut local_addr = SocketAddr::new(local_ip, local.port);
 
         // The interface binding is part of the identity: same-tuple sockets
         // bound to different interfaces coexist, and a segment arrives on
         // exactly one interface.
         let (sockets, index) = (&self.sockets, self.index);
         let tuple_in_use = |local: SocketAddr| {
-            sockets.iter().any(|(i, s)| {
-                i != index
-                    && s.binding == binding
-                    && s.tuple
-                        == Some(Tuple {
-                            local,
-                            remote: remote_endpoint,
-                        })
-            })
+            sockets
+                .iter()
+                .any(|(i, s)| i != index && s.binding == binding && s.tuple == Some(Tuple { local, remote }))
         };
 
-        if local_endpoint.port == 0 {
-            local_endpoint.port = alloc_ephemeral_port(self.tx.rand(), |port| {
-                tuple_in_use(SocketAddr::new(local_endpoint.addr, port))
+        if local_addr.port == 0 {
+            local_addr.port = alloc_ephemeral_port(self.tx.rand(), |port| {
+                tuple_in_use(SocketAddr::new(local_addr.addr, port))
             })
             .ok_or(ConnectError::NoFreePorts)?;
-        } else if tuple_in_use(local_endpoint) {
+        } else if tuple_in_use(local_addr) {
             return Err(ConnectError::InUse);
         }
         let seq = TcpSocketState::random_seq_no(self.tx.rand());
@@ -2724,8 +2718,8 @@ impl<'d> TcpSocket<'_, 'd> {
         let s = self.inner_mut();
         s.reset();
         s.tuple = Some(Tuple {
-            local: local_endpoint,
-            remote: remote_endpoint,
+            local: local_addr,
+            remote,
         });
         s.set_state(State::SynSent);
         s.local_seq_no = seq;
@@ -2772,7 +2766,7 @@ impl<'d> TcpSocket<'_, 'd> {
     /// data and would like to reuse the socket right away, use [abort](#method.abort).
     pub fn close(&mut self) {
         match self.inner_mut().state {
-            // In the SYN-SENT state the remote endpoint is not yet synchronized and, upon
+            // In the SYN-SENT state the remote peer is not yet synchronized and, upon
             // receiving an RST, will abort the connection.
             State::SynSent => self.inner_mut().set_state(State::Closed),
             // In the SYN-RECEIVED, ESTABLISHED and CLOSE-WAIT states the transmit half
@@ -2789,7 +2783,7 @@ impl<'d> TcpSocket<'_, 'd> {
     /// Aborts the connection, if any.
     ///
     /// This function instantly closes the socket. One reset packet will be sent to the remote
-    /// endpoint.
+    /// peer.
     ///
     /// In terms of the TCP state machine, the socket may be in any state and is moved to
     /// the `CLOSED` state.
@@ -2813,12 +2807,12 @@ impl<'d> TcpSocket<'_, 'd> {
     /// Return whether a connection is active.
     ///
     /// This function returns true if the socket is actively exchanging packets with
-    /// a remote endpoint. Note that this does not mean that it is possible to send or receive
+    /// a remote peer. Note that this does not mean that it is possible to send or receive
     /// data through the socket; for that, use [can_send](#method.can_send) or
     /// [can_recv](#method.can_recv).
     ///
     /// If a connection is established, [abort](#method.close) will send a reset to
-    /// the remote endpoint.
+    /// the remote peer.
     ///
     /// In terms of the TCP state machine, the socket must not be in the `CLOSED`
     /// or `TIME-WAIT` state.
@@ -2834,7 +2828,7 @@ impl<'d> TcpSocket<'_, 'd> {
     /// Return whether the transmit half of the full-duplex connection is open.
     ///
     /// This function returns true if it's possible to send data and have it arrive
-    /// to the remote endpoint. However, it does not make any guarantees about the state
+    /// to the remote peer. However, it does not make any guarantees about the state
     /// of the transmit buffer, and even if it returns true, [send](#method.send) may
     /// not be able to enqueue any octets.
     ///
@@ -2844,7 +2838,7 @@ impl<'d> TcpSocket<'_, 'd> {
     pub fn may_send(&self) -> bool {
         match self.inner().state {
             State::Established => true,
-            // In CLOSE-WAIT, the remote endpoint has closed our receive half of the connection
+            // In CLOSE-WAIT, the remote peer has closed our receive half of the connection
             // but we still can transmit indefinitely.
             State::CloseWait => true,
             _ => false,
@@ -2853,9 +2847,9 @@ impl<'d> TcpSocket<'_, 'd> {
 
     /// Return whether the receive half of the full-duplex connection is open.
     ///
-    /// This function returns true if it's possible to receive data from the remote endpoint.
+    /// This function returns true if it's possible to receive data from the remote peer.
     /// It will return true while there is data in the receive buffer, and if there isn't,
-    /// as long as the remote endpoint has not closed the connection.
+    /// as long as the remote peer has not closed the connection.
     ///
     /// In terms of the TCP state machine, the socket must be in the `ESTABLISHED`,
     /// `FIN-WAIT-1`, or `FIN-WAIT-2` state, or have data in the receive buffer instead.
@@ -3575,7 +3569,7 @@ mod test {
         assert_eq!(stack.tcp_listener(h1).listen(0), Err(ListenError::Unaddressable));
         assert_eq!(stack.tcp_listener(h1).listen(80), Ok(()));
         assert!(stack.tcp_listener(h1).is_open());
-        // Re-listening on the same endpoint is a no-op...
+        // Re-listening on the same address is a no-op...
         assert_eq!(stack.tcp_listener(h1).listen(80), Ok(()));
         // ...but a different one is an error.
         assert_eq!(stack.tcp_listener(h1).listen(81), Err(ListenError::InvalidState));
@@ -3608,8 +3602,8 @@ mod test {
         assert!(!stack.tcp_listener(h).can_accept());
         assert!(stack.tcp_listener(h).accept().is_none());
         assert_eq!(stack.tcp_socket(sh).state(), State::SynReceived);
-        assert_eq!(stack.tcp_socket(sh).local_endpoint(), Some(LOCAL_END));
-        assert_eq!(stack.tcp_socket(sh).remote_endpoint(), Some(REMOTE_END));
+        assert_eq!(stack.tcp_socket(sh).local_addr(), Some(LOCAL_END));
+        assert_eq!(stack.tcp_socket(sh).remote_addr(), Some(REMOTE_END));
 
         // The accepted socket is exactly a SYN-RECEIVED socket: it sends the
         // SYN|ACK, advertising its actual receive window, and completes the
@@ -3660,12 +3654,12 @@ mod test {
         assert!(listener_deliver(&mut stack, &syn_repr()));
         let token = stack.tcp_listener(h).accept().unwrap();
         assert!(!stack.tcp_listener(h).can_accept());
-        assert_eq!(token.local_endpoint(), LOCAL_END);
-        assert_eq!(token.remote_endpoint(), REMOTE_END);
+        assert_eq!(token.local_addr(), LOCAL_END);
+        assert_eq!(token.remote_addr(), REMOTE_END);
         assert_eq!(stack.tcp_socket(sh).accept(token), Ok(()));
         assert_eq!(stack.tcp_socket(sh).state(), State::SynReceived);
-        assert_eq!(stack.tcp_socket(sh).local_endpoint(), Some(LOCAL_END));
-        assert_eq!(stack.tcp_socket(sh).remote_endpoint(), Some(REMOTE_END));
+        assert_eq!(stack.tcp_socket(sh).local_addr(), Some(LOCAL_END));
+        assert_eq!(stack.tcp_socket(sh).remote_addr(), Some(REMOTE_END));
 
         // The socket is in use now: accepting into it is rejected and the
         // token's attempt is dropped. The client's retransmitted SYN would
@@ -3699,7 +3693,7 @@ mod test {
         assert_eq!(stack.tcp_socket(sh).accept(token), Ok(()));
         assert_eq!(stack.tcp_socket(sh).state(), State::SynReceived);
         assert_eq!(
-            stack.tcp_socket(sh).remote_endpoint(),
+            stack.tcp_socket(sh).remote_addr(),
             Some(SocketAddr::new(REMOTE_ADDR.into(), REMOTE_PORT + 1))
         );
         assert!(stack.sockets.tcp.get(sh.index()).tx_buffer.is_empty());
@@ -3764,7 +3758,7 @@ mod test {
         // address resolved from the bound interface.
         stack.tcp_socket(h).connect((REMOTE2_ADDR, REMOTE_PORT), 0).unwrap();
         assert_eq!(
-            stack.tcp_socket(h).local_endpoint().map(|e| e.addr),
+            stack.tcp_socket(h).local_addr().map(|e| e.addr),
             Some(LOCAL2_ADDR.into())
         );
 
@@ -3852,7 +3846,7 @@ mod test {
         assert_eq!(stack.tcp_socket(sh).bound_iface(), Some(if0));
 
         // The binding survives close, and is part of the listen identity: an
-        // identical endpoint bound to another interface (or unbound) coexists,
+        // identical address bound to another interface (or unbound) coexists,
         // the identical binding conflicts.
         stack.tcp_listener(h).close();
         assert_eq!(stack.tcp_listener(h).bound_iface(), Some(if0));
@@ -3870,7 +3864,7 @@ mod test {
     #[test]
     fn test_listener_bind_to_iface_scoring() {
         // A listener bound to the arrival interface wins the SYN over an
-        // unbound one with an equal endpoint.
+        // unbound one with an equal address.
         let mut stack = test_stack();
         let if0 = IfaceHandle::new(0);
         let if1 = IfaceHandle::new(1);
@@ -4566,13 +4560,13 @@ mod test {
         // Local port 0 allocates an ephemeral port. (The explicit local address
         // avoids needing an interface for source address selection.)
         stack.tcp_socket(h1).connect(REMOTE_END, (LOCAL_ADDR, 0)).unwrap();
-        let p1 = stack.tcp_socket(h1).local_endpoint().unwrap().port;
+        let p1 = stack.tcp_socket(h1).local_addr().unwrap().port;
         assert!(p1 >= EPHEMERAL_PORT_MIN);
 
         // A second connection to the same remote would duplicate the 4-tuple,
         // so the allocation skips the port the first socket claimed.
         stack.tcp_socket(h2).connect(REMOTE_END, (LOCAL_ADDR, 0)).unwrap();
-        let p2 = stack.tcp_socket(h2).local_endpoint().unwrap().port;
+        let p2 = stack.tcp_socket(h2).local_addr().unwrap().port;
         assert!(p2 >= EPHEMERAL_PORT_MIN);
         assert_ne!(p1, p2);
     }
@@ -4603,7 +4597,7 @@ mod test {
             .connect(REMOTE_END, (LOCAL_ADDR, LOCAL_PORT))
             .unwrap();
 
-        // Only the full 4-tuple must be unique: the same local endpoint may
+        // Only the full 4-tuple must be unique: the same local address may
         // connect to a different remote...
         stack
             .tcp_socket(h2)
@@ -11543,7 +11537,7 @@ mod stack_test {
         (stack, driver)
     }
 
-    /// Build a full IPv4+TCP packet from the remote to the local endpoint,
+    /// Build a full IPv4+TCP packet from the remote to the local address,
     /// checksums filled, ready for injection into the device RX queue.
     fn tcp_packet(repr: &TcpRepr) -> Vec<u8> {
         let mut buf = build_tcp_packet(

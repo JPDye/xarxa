@@ -46,7 +46,7 @@ struct PendingSyn {
 /// TCP listener state, stored inside the stack.
 #[derive(Debug)]
 pub(crate) struct TcpListenerState {
-    /// The listened endpoint. A zero port means the listener is closed. The
+    /// The listened address. A zero port means the listener is closed. The
     /// address scopes the listen, from any address of any version down to one
     /// exact address.
     local: ListenSocketAddr,
@@ -158,7 +158,7 @@ impl TcpListenerState {
 /// consumed.
 ///
 /// The listeners consume exactly two things, and never reply to either. A SYN
-/// to a listened endpoint is recorded on the *most specific* matching listener,
+/// to a listened address is recorded on the *most specific* matching listener,
 /// where an exact local-address match beats a wildcard one, so a per-address
 /// listener takes its address's connections away from an any-address one on the
 /// same port. An RST aimed at a recorded SYN removes it. Everything else is
@@ -211,13 +211,13 @@ pub struct AcceptToken {
 }
 
 impl AcceptToken {
-    /// The local endpoint the client is connecting to.
-    pub fn local_endpoint(&self) -> SocketAddr {
+    /// The local address the client is connecting to.
+    pub fn local_addr(&self) -> SocketAddr {
         self.syn.tuple.local
     }
 
-    /// The remote endpoint the connection attempt comes from.
-    pub fn remote_endpoint(&self) -> SocketAddr {
+    /// The remote address the connection attempt comes from.
+    pub fn remote_addr(&self) -> SocketAddr {
         self.syn.tuple.remote
     }
 
@@ -294,18 +294,18 @@ impl TcpListener<'_> {
         self.listeners.get_mut(self.index)
     }
 
-    /// Start listening on the given endpoint.
+    /// Start listening on the given local address.
     ///
     /// Returns:
     /// - `Err(ListenError::Unaddressable)` if the port is zero.
     /// - `Err(ListenError::InvalidState)` if the listener is already listening
-    ///   (unless it is listening on this same endpoint, which is a no-op).
+    ///   (unless it is listening on this same address, which is a no-op).
     /// - `Err(ListenError::InUse)` if another listener is bound to an identical
-    ///   endpoint. Listeners on the same port with *different* specificity (one
+    ///   address. Listeners on the same port with *different* specificity (one
     ///   wildcard, one per-version, one per-address) may coexist, and so may
-    ///   listeners on identical endpoints bound to different interfaces.
-    pub fn listen(&mut self, local_endpoint: impl Into<ListenSocketAddr>) -> Result<(), ListenError> {
-        let local = local_endpoint.into();
+    ///   listeners on identical addresses bound to different interfaces.
+    pub fn listen(&mut self, local: impl Into<ListenSocketAddr>) -> Result<(), ListenError> {
+        let local = local.into();
         if local.port == 0 {
             return Err(ListenError::Unaddressable);
         }
@@ -337,7 +337,7 @@ impl TcpListener<'_> {
     /// The listener must be closed. The binding is kept across
     /// [`close`](Self::close).
     ///
-    /// Two listeners on the same endpoint can coexist if they are bound to different interfaces,
+    /// Two listeners on the same address can coexist if they are bound to different interfaces,
     /// or if one is not bound. In the latter case, the bound listener "wins" for incoming
     /// connections coming from the bound interface.
     ///
@@ -378,10 +378,10 @@ impl TcpListener<'_> {
         self.inner().local.port != 0
     }
 
-    /// Return the listened endpoint. The address is the filter the listen scoped
+    /// Return the listened address. The address is the filter the listen scoped
     /// the listener to. A zero port means the listener is closed.
     #[inline]
-    pub fn local_endpoint(&self) -> ListenSocketAddr {
+    pub fn local_addr(&self) -> ListenSocketAddr {
         self.inner().local
     }
 

@@ -1259,7 +1259,7 @@ mod test {
         );
         let recv = stack.udp_socket(handle).recv().unwrap();
         assert_eq!(&*recv, b"hi");
-        assert_eq!(recv.meta().endpoint, SocketAddr::new(REMOTE_V4.into(), 5353));
+        assert_eq!(recv.meta().remote_addr, SocketAddr::new(REMOTE_V4.into(), 5353));
         drop(recv);
 
         // Left: dropped again.

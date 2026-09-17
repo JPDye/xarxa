@@ -342,11 +342,11 @@ impl fmt::Display for Cidr {
 ///
 /// `SocketAddr` names one peer: both the address and the port are meant to be
 /// specified. [`UNSPECIFIED`](Self::UNSPECIFIED) is the one exception, a
-/// sentinel for "no endpoint given" where an API defaults it from elsewhere.
+/// sentinel for "no address given" where an API defaults it from elsewhere.
 /// [`UdpSocket::send_with`](crate::udp::UdpSocket::send_with) takes the socket's
 /// connected remote for it.
 ///
-/// See also [`ListenSocketAddr`], the endpoint of a *bind*, whose address is
+/// See also [`ListenSocketAddr`], the address of a *bind*, whose address is
 /// optional so that it can match more than one of our addresses.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -356,23 +356,23 @@ pub struct SocketAddr {
 }
 
 impl SocketAddr {
-    /// The wildcard endpoint: unspecified address, port zero. Not a destination
-    /// anything can be sent to, but a sentinel for "no endpoint given".
+    /// The wildcard address: unspecified address, port zero. Not a destination
+    /// anything can be sent to, but a sentinel for "no address given".
     #[cfg(feature = "ipv4")]
     pub const UNSPECIFIED: SocketAddr = SocketAddr {
         addr: Address::V4(Ipv4Addr::UNSPECIFIED),
         port: 0,
     };
 
-    /// The wildcard endpoint: unspecified address, port zero. Not a destination
-    /// anything can be sent to, but a sentinel for "no endpoint given".
+    /// The wildcard address: unspecified address, port zero. Not a destination
+    /// anything can be sent to, but a sentinel for "no address given".
     #[cfg(not(feature = "ipv4"))]
     pub const UNSPECIFIED: SocketAddr = SocketAddr {
         addr: Address::V6(Ipv6Addr::UNSPECIFIED),
         port: 0,
     };
 
-    /// Create an endpoint address from given address and port.
+    /// Create a socket address from an address and a port.
     pub const fn new(addr: Address, port: u16) -> SocketAddr {
         SocketAddr { addr, port }
     }
@@ -426,7 +426,7 @@ impl fmt::Display for SocketAddr {
 ///   of *that* version, and none of the other one.
 /// - `Some(addr)` with a concrete address: that address alone.
 ///
-/// An endpoint can be constructed from a port alone, in which case the address
+/// It can be constructed from a port alone, in which case the address
 /// is `None`, and from an (address, port) pair, in which case it is `Some`. So
 /// `(Ipv4Addr::UNSPECIFIED, 80)` is the "any IPv4 address" bind, and
 /// `(Ipv6Addr::UNSPECIFIED, 80)` the IPv6 one.
@@ -438,7 +438,7 @@ pub struct ListenSocketAddr {
 }
 
 impl ListenSocketAddr {
-    /// The fully wildcard endpoint: any address of any version, port zero.
+    /// The fully wildcard address: any address of any version, port zero.
     pub const UNSPECIFIED: ListenSocketAddr = ListenSocketAddr { addr: None, port: 0 };
 
     /// The address, if it is a concrete one, neither absent nor unspecified. That
@@ -447,12 +447,12 @@ impl ListenSocketAddr {
         self.addr.filter(|addr| !addr.is_unspecified())
     }
 
-    /// The IP version this endpoint is restricted to, if it is restricted to one.
+    /// The IP version this is restricted to, if it is restricted to one.
     pub fn version(&self) -> Option<Version> {
         self.addr.map(|addr| addr.version())
     }
 
-    /// Query whether the endpoint names one concrete address and a nonzero port.
+    /// Query whether this names one concrete address and a nonzero port.
     pub fn is_specified(&self) -> bool {
         self.concrete_addr().is_some() && self.port != 0
     }
@@ -465,10 +465,10 @@ impl From<u16> for ListenSocketAddr {
 }
 
 impl From<SocketAddr> for ListenSocketAddr {
-    fn from(endpoint: SocketAddr) -> ListenSocketAddr {
+    fn from(addr: SocketAddr) -> ListenSocketAddr {
         ListenSocketAddr {
-            addr: Some(endpoint.addr),
-            port: endpoint.port,
+            addr: Some(addr.addr),
+            port: addr.port,
         }
     }
 }

@@ -78,7 +78,7 @@ fn main() {
         // Accept every queued connection attempt into a fresh socket. The
         // socket answers the SYN with a SYN|ACK on the next poll.
         while let Some(token) = stack.tcp_listener(listener).accept() {
-            log::info!("tcp: connection from {}", token.remote_endpoint());
+            log::info!("tcp: connection from {}", token.remote_addr());
             let handle = stack.add_tcp_socket(4096, 4096).unwrap();
             stack.tcp_socket(handle).accept(token).unwrap();
             connections.push(handle);
@@ -96,7 +96,7 @@ fn main() {
                 socket.send_slice(&buf[..len]).unwrap();
             }
 
-            // The remote endpoint closed its transmit half and everything
+            // The remote peer closed its transmit half and everything
             // received has been echoed back: close ours too.
             if !socket.may_recv() && socket.may_send() {
                 socket.close();

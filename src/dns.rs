@@ -370,7 +370,7 @@ impl DnsClient {
                 Err(_) => continue,
             };
 
-            let remote = pkt.meta().endpoint;
+            let remote = pkt.meta().remote_addr;
             if !self.accepts(remote) {
                 trace!("dns packet from unexpected source {}", remote);
                 continue;

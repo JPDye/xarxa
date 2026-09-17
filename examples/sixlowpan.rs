@@ -99,12 +99,12 @@ fn main() {
             log::info!("udp: echoing {} octets to {}", packet.payload().len(), meta);
             let data = packet.payload().to_vec();
             drop(packet); // free the buffer before sending
-            socket.send_slice(&data, meta.endpoint).unwrap();
+            socket.send_slice(&data, meta.remote_addr).unwrap();
         }
 
         // Accept every queued connection attempt into a fresh socket.
         while let Some(token) = stack.tcp_listener(listener).accept() {
-            log::info!("tcp: connection from {}", token.remote_endpoint());
+            log::info!("tcp: connection from {}", token.remote_addr());
             let handle = stack.add_tcp_socket(4096, 4096).unwrap();
             stack.tcp_socket(handle).accept(token).unwrap();
             connections.push(handle);
@@ -122,7 +122,7 @@ fn main() {
                 socket.send_slice(&buf[..len]).unwrap();
             }
 
-            // The remote endpoint closed its transmit half and everything
+            // The remote peer closed its transmit half and everything
             // received has been echoed back: close ours too.
             if !socket.may_recv() && socket.may_send() {
                 socket.close();

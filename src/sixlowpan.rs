@@ -1366,8 +1366,8 @@ mod test {
         let mut socket = stack.udp_socket(udp);
         let received = socket.recv().unwrap();
         assert_eq!(&*received, b"Hello");
-        assert_eq!(received.meta().endpoint, SocketAddr::new(src.into(), 67));
-        assert_eq!(received.meta().local_address, Some(dst.into()));
+        assert_eq!(received.meta().remote_addr, SocketAddr::new(src.into(), 67));
+        assert_eq!(received.meta().local_addr, Some(dst.into()));
     }
 
     /// A UDP datagram whose NHC header elides the checksum is delivered, with
@@ -1390,7 +1390,10 @@ mod test {
         let mut socket = stack.udp_socket(udp);
         let received = socket.recv().unwrap();
         assert_eq!(&*received, b"no checksum");
-        assert_eq!(received.meta().endpoint, SocketAddr::new(PEER_LINK_LOCAL.into(), 1234));
+        assert_eq!(
+            received.meta().remote_addr,
+            SocketAddr::new(PEER_LINK_LOCAL.into(), 1234)
+        );
     }
 
     static SIXLOWPAN_COMPRESSED_RPL_DAO: [u8; 99] = [
@@ -1802,8 +1805,8 @@ In at rhoncus tortor. Cras blandit tellus diam, varius vestibulum nibh commodo n
             let mut socket = stack.udp_socket(udp);
             let received = socket.recv().unwrap();
             assert_eq!(&*received, UDP_DATA);
-            assert_eq!(received.meta().endpoint, remote);
-            assert_eq!(received.meta().local_address, Some(VECTOR_LINK_LOCAL.into()));
+            assert_eq!(received.meta().remote_addr, remote);
+            assert_eq!(received.meta().local_addr, Some(VECTOR_LINK_LOCAL.into()));
         }
         assert!(tx.borrow().is_empty());
 
@@ -1853,7 +1856,10 @@ In at rhoncus tortor. Cras blandit tellus diam, varius vestibulum nibh commodo n
         let received = socket.recv().unwrap();
         assert_eq!(received.len(), 300);
         assert!(received.iter().enumerate().all(|(i, &b)| b == i as u8));
-        assert_eq!(received.meta().endpoint, SocketAddr::new(PEER_LINK_LOCAL.into(), 1234));
+        assert_eq!(
+            received.meta().remote_addr,
+            SocketAddr::new(PEER_LINK_LOCAL.into(), 1234)
+        );
         assert_eq!(socket.recv().err(), Some(RecvError::Exhausted));
     }
 
