@@ -20,7 +20,7 @@ use serde::ser::{Serialize, Serializer};
 use super::Ipv4Cidr;
 #[cfg(feature = "ipv6")]
 use super::Ipv6Cidr;
-use super::{IpAddr, IpCidr, IpVersion, SocketAddr};
+use super::{IpAddr, IpCidr, SocketAddr};
 
 struct FromStrVisitor<T> {
     expecting: &'static str,
@@ -62,10 +62,22 @@ static IP_VERSIONS: &[&str] = &[
     "V6",
 ];
 
-struct IpVersionVisitor;
+/// Which variant of an IPv4/IPv6 enum follows, as a variant tag.
+///
+/// Deliberately its own type rather than [`IpVersion`](crate::wire::IpVersion):
+/// the `Deserialize` below reads a serde *variant identifier*, which is not what
+/// deserializing a standalone value means, and `IpVersion` is public API.
+enum VersionTag {
+    #[cfg(feature = "ipv4")]
+    V4,
+    #[cfg(feature = "ipv6")]
+    V6,
+}
 
-impl<'de> Visitor<'de> for IpVersionVisitor {
-    type Value = IpVersion;
+struct VersionTagVisitor;
+
+impl<'de> Visitor<'de> for VersionTagVisitor {
+    type Value = VersionTag;
 
     fn expecting(&self, f: &mut Formatter<'_>) -> fmt::Result {
         #[cfg(all(feature = "ipv4", feature = "ipv6"))]
@@ -84,9 +96,9 @@ impl<'de> Visitor<'de> for IpVersionVisitor {
     {
         match value {
             #[cfg(feature = "ipv4")]
-            0 => Ok(IpVersion::V4),
+            0 => Ok(VersionTag::V4),
             #[cfg(feature = "ipv6")]
-            1 => Ok(IpVersion::V6),
+            1 => Ok(VersionTag::V6),
             _ => Err(E::invalid_value(Unexpected::Unsigned(value), &self)),
         }
     }
@@ -97,9 +109,9 @@ impl<'de> Visitor<'de> for IpVersionVisitor {
     {
         match value {
             #[cfg(feature = "ipv4")]
-            "V4" => Ok(IpVersion::V4),
+            "V4" => Ok(VersionTag::V4),
             #[cfg(feature = "ipv6")]
-            "V6" => Ok(IpVersion::V6),
+            "V6" => Ok(VersionTag::V6),
             _ => Err(E::unknown_variant(value, IP_VERSIONS)),
         }
     }
@@ -110,9 +122,9 @@ impl<'de> Visitor<'de> for IpVersionVisitor {
     {
         match value {
             #[cfg(feature = "ipv4")]
-            b"V4" => Ok(IpVersion::V4),
+            b"V4" => Ok(VersionTag::V4),
             #[cfg(feature = "ipv6")]
-            b"V6" => Ok(IpVersion::V6),
+            b"V6" => Ok(VersionTag::V6),
             _ => match str::from_utf8(value) {
                 Ok(value) => Err(E::unknown_variant(value, IP_VERSIONS)),
                 Err(_) => Err(E::invalid_value(Unexpected::Bytes(value), &self)),
@@ -121,12 +133,12 @@ impl<'de> Visitor<'de> for IpVersionVisitor {
     }
 }
 
-impl<'de> Deserialize<'de> for IpVersion {
+impl<'de> Deserialize<'de> for VersionTag {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_identifier(IpVersionVisitor)
+        deserializer.deserialize_identifier(VersionTagVisitor)
     }
 }
 
@@ -152,9 +164,9 @@ macro_rules! deserialize_enum {
             {
                 match data.variant()? {
                     #[cfg(feature = "ipv4")]
-                    (IpVersion::V4, v) => v.newtype_variant().map($ty::V4),
+                    (VersionTag::V4, v) => v.newtype_variant().map($ty::V4),
                     #[cfg(feature = "ipv6")]
-                    (IpVersion::V6, v) => v.newtype_variant().map($ty::V6),
+                    (VersionTag::V6, v) => v.newtype_variant().map($ty::V6),
                 }
             }
         }
