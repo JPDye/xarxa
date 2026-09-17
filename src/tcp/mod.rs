@@ -3067,16 +3067,6 @@ impl<'d> TcpSocket<'_, 'd> {
     }
 }
 
-impl fmt::Write for TcpSocket<'_, '_> {
-    fn write_str(&mut self, slice: &str) -> fmt::Result {
-        let slice = slice.as_bytes();
-        if self.send_slice(slice) == Ok(slice.len()) {
-            Ok(())
-        } else {
-            Err(fmt::Error)
-        }
-    }
-}
 /// Iterator over the TCP sockets of a [`Stack`], returned by [`Stack::tcp_sockets`].
 ///
 /// Each item borrows the stack, so only one can exist at a time. That is why this is
