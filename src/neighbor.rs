@@ -1,9 +1,11 @@
 // Heads up! Before working on this file you should read, at least,
 // the parts of RFC 1122 that discuss ARP, and RFC 4861 § 7.2 and § 7.3.
 
-use crate::storage::{BoundedVec, Full};
+use crate::error::Full;
+use crate::storage::BoundedVec;
 
 use crate::driver::PacketBuf;
+use crate::error::NotUnicast;
 use crate::iface::IfaceHandle;
 use crate::time::{Duration, Instant};
 use crate::wire::{HardwareAddress, IpAddress};
@@ -316,13 +318,22 @@ impl NeighborCache {
     ///
     /// If the cache is full, another entry is evicted to make room.
     ///
-    /// # Panics
-    /// Panics if `addr` or `hardware_addr` is not unicast.
-    pub fn insert(&mut self, iface: IfaceHandle, addr: IpAddress, hardware_addr: HardwareAddress, expires_at: Instant) {
-        assert!(addr.is_unicast());
-        assert!(hardware_addr.is_unicast());
+    /// Errors:
+    /// - `NotUnicast` if `addr` or `hardware_addr` is not unicast. The cache
+    ///   is left unchanged.
+    pub fn insert(
+        &mut self,
+        iface: IfaceHandle,
+        addr: IpAddress,
+        hardware_addr: HardwareAddress,
+        expires_at: Instant,
+    ) -> Result<(), NotUnicast> {
+        if !addr.is_unicast() || !hardware_addr.is_unicast() {
+            return Err(NotUnicast);
+        }
 
         self.fill_with_expiration((iface, addr), hardware_addr, expires_at);
+        Ok(())
     }
 
     /// Remove the entry for a neighbor, returning it if there was one.
@@ -552,6 +563,42 @@ mod test {
         assert_eq!(
             cache.lookup(&key(MOCK_IP_ADDR_1), Instant::from_millis(0)),
             Answer::Found(addr)
+        );
+    }
+
+    /// `insert` refuses addresses that are not unicast, on either side of the
+    /// mapping, and leaves the cache alone.
+    #[test]
+    fn insert_rejects_non_unicast() {
+        let mut cache = NeighborCache::new();
+        let all_nodes = Ipv6Address::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
+        assert_eq!(
+            cache.insert(IF_0, all_nodes.into(), HADDR_A, Instant::MAX),
+            Err(NotUnicast)
+        );
+        assert_eq!(
+            cache.insert(IF_0, Ipv6Address::UNSPECIFIED.into(), HADDR_A, Instant::MAX),
+            Err(NotUnicast)
+        );
+        #[cfg(feature = "medium-ethernet")]
+        assert_eq!(
+            cache.insert(
+                IF_0,
+                MOCK_IP_ADDR_1.into(),
+                HardwareAddress::Ethernet(crate::wire::EthernetAddress::BROADCAST),
+                Instant::MAX
+            ),
+            Err(NotUnicast)
+        );
+        assert!(cache.is_empty());
+
+        cache
+            .insert(IF_0, MOCK_IP_ADDR_1.into(), HADDR_A, Instant::MAX)
+            .unwrap();
+        assert_eq!(cache.len(), 1);
+        assert_eq!(
+            cache.lookup(&key(MOCK_IP_ADDR_1), Instant::from_millis(0)),
+            Answer::Found(HADDR_A)
         );
     }
 

@@ -13,7 +13,8 @@ use crate::config::TCP_SOCKET_COUNT;
 use crate::driver::ChecksumCapabilities;
 use crate::driver::PacketBuf;
 #[cfg(feature = "icmp-errors")]
-use crate::icmp_error::IcmpError;
+use crate::error::IcmpError;
+use crate::error::InvalidHopLimit;
 use crate::iface::IfaceHandle;
 use crate::rand::Rand;
 use crate::stack::{EgressRoute, IfaceBinding, Stack, TxContext, alloc_ephemeral_port};
@@ -2570,19 +2571,19 @@ impl<'d> TcpSocket<'_, 'd> {
     /// A socket without an explicitly set hop limit value uses the default [IANA recommended]
     /// value (64).
     ///
-    /// # Panics
-    ///
-    /// This function panics if a hop limit value of 0 is given. See [RFC 1122 § 3.2.1.7].
+    /// Errors:
+    /// - `InvalidHopLimit` if the hop limit is `Some(0)`. A host must not send a
+    ///   packet with a hop limit of zero ([RFC 1122 § 3.2.1.7]). The socket is
+    ///   left unchanged.
     ///
     /// [IANA recommended]: https://www.iana.org/assignments/ip-parameters/ip-parameters.xhtml
     /// [RFC 1122 § 3.2.1.7]: https://tools.ietf.org/html/rfc1122#section-3.2.1.7
-    pub fn set_hop_limit(&mut self, hop_limit: Option<u8>) {
-        // A host MUST NOT send a datagram with a hop limit value of 0
-        if let Some(0) = hop_limit {
-            panic!("the time-to-live value of a packet must not be zero")
+    pub fn set_hop_limit(&mut self, hop_limit: Option<u8>) -> Result<(), InvalidHopLimit> {
+        if hop_limit == Some(0) {
+            return Err(InvalidHopLimit);
         }
-
-        self.inner_mut().hop_limit = hop_limit
+        self.inner_mut().hop_limit = hop_limit;
+        Ok(())
     }
 
     /// Bind the socket to an interface, or unbind it with `None`.
@@ -9328,7 +9329,7 @@ mod test {
     fn test_set_hop_limit() {
         let mut s = socket_syn_received();
 
-        s.view().set_hop_limit(Some(0x2a));
+        s.view().set_hop_limit(Some(0x2a)).unwrap();
         assert_eq!(
             s.sockets
                 .get_mut(0)
@@ -9346,10 +9347,12 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "the time-to-live value of a packet must not be zero")]
     fn test_set_hop_limit_zero() {
         let mut s = socket_syn_received();
-        s.view().set_hop_limit(Some(0));
+        s.view().set_hop_limit(Some(0x2a)).unwrap();
+        assert_eq!(s.view().set_hop_limit(Some(0)), Err(InvalidHopLimit));
+        // Rejected, so the previous value stays.
+        assert_eq!(s.view().hop_limit(), Some(0x2a));
     }
 
     // =========================================================================================//

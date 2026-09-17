@@ -1,7 +1,8 @@
 use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
-use super::{Error, Result};
+use super::Result;
+use crate::error::Malformed;
 use crate::wire::ip::checksum;
 
 pub use super::IpProtocol as Protocol;
@@ -125,7 +126,7 @@ impl Cidr {
                 prefix_len: netmask.count_ones() as u8,
             })
         } else {
-            Err(Error)
+            Err(Malformed)
         }
     }
 
@@ -230,10 +231,10 @@ impl<'a> Packet<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Error)` if the buffer is too short.
-    /// Returns `Err(Error)` if the header length is greater
+    /// Returns `Err(Malformed)` if the buffer is too short.
+    /// Returns `Err(Malformed)` if the header length is greater
     /// than total length.
-    /// Returns `Err(Error)` if the header length is less than minimum allowed IHL
+    /// Returns `Err(Malformed)` if the header length is less than minimum allowed IHL
     ///
     /// The result of this check is invalidated by calling [set_header_len]
     /// and [set_total_len].
@@ -244,15 +245,15 @@ impl<'a> Packet<'a> {
     pub fn check_len(&self) -> Result<()> {
         let len = self.buffer.len();
         if len < field::DST_ADDR.end {
-            Err(Error)
+            Err(Malformed)
         } else if len < self.header_len() as usize {
-            Err(Error)
+            Err(Malformed)
         } else if self.header_len() as u16 > self.total_len() {
-            Err(Error)
+            Err(Malformed)
         } else if len < self.total_len() as usize {
-            Err(Error)
+            Err(Malformed)
         } else if self.header_len() < MINIMUM_IHL_BYTES {
-            Err(Error)
+            Err(Malformed)
         } else {
             Ok(())
         }
@@ -560,7 +561,7 @@ pub(crate) mod test {
         let mut bytes = PACKET_BYTES;
         Packet::new_unchecked(&mut bytes).set_total_len(128);
 
-        assert_eq!(Packet::new_checked(&mut bytes).unwrap_err(), Error);
+        assert_eq!(Packet::new_checked(&mut bytes).unwrap_err(), Malformed);
     }
 
     static REPR_PACKET_BYTES: [u8; 24] = [
@@ -572,7 +573,7 @@ pub(crate) mod test {
     fn test_parse_total_len_less_than_header_len() {
         let mut bytes = [0; 40];
         bytes[0] = 0x09;
-        assert_eq!(Packet::new_checked(&mut bytes), Err(Error));
+        assert_eq!(Packet::new_checked(&mut bytes), Err(Malformed));
     }
 
     #[test]
@@ -581,7 +582,7 @@ pub(crate) mod test {
         let mut packet = Packet::new_unchecked(&mut bytes);
         packet.set_header_len(16);
 
-        assert_eq!(Packet::new_checked(&mut bytes), Err(Error));
+        assert_eq!(Packet::new_checked(&mut bytes), Err(Malformed));
     }
 
     #[test]

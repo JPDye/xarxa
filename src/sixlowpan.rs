@@ -9,10 +9,11 @@
 
 use crate::config::SIXLOWPAN_ADDRESS_CONTEXT_COUNT;
 use crate::driver::PacketBuf;
+use crate::error::{Full, Malformed};
 use crate::iface::{Iface, IfaceHandle, IfaceState};
 use crate::rand::Rand;
 use crate::stack::{Stack, StackInner};
-use crate::storage::{Full, Vec};
+use crate::storage::Vec;
 use crate::wire::ip::checksum;
 use crate::wire::*;
 
@@ -267,11 +268,11 @@ pub(crate) fn sixlowpan_to_ipv6(
                     let (ext_repr, hdr_len) = SixlowpanExtHeaderRepr::parse(&buf[offset..])?;
                     let data_len = ext_repr.length as usize;
                     if offset + hdr_len + data_len > buf.len() {
-                        return Err(Error);
+                        return Err(Malformed);
                     }
                     let nh = decompress_next_header(ext_repr.next_header, &buf[offset + hdr_len + data_len..])?;
                     if n_ext == MAX_NHC_EXT_HEADERS {
-                        return Err(Error);
+                        return Err(Malformed);
                     }
                     exts[n_ext] = ExtInfo {
                         next_header: nh,
@@ -309,9 +310,9 @@ pub(crate) fn sixlowpan_to_ipv6(
     // Make room. The uncompressed chain is always longer: the IPHC header
     // alone frees at least 38 bytes, and a compressed extension header is at
     // most 1 byte shorter than its IPv6 form.
-    let grow = uncompressed_len.checked_sub(compressed_len).ok_or(Error)?;
+    let grow = uncompressed_len.checked_sub(compressed_len).ok_or(Malformed)?;
     if !buf.ensure_headroom(grow) {
-        return Err(Error);
+        return Err(Malformed);
     }
     buf.push_front(grow);
     // Everything recorded above moved by `grow`. The payload, at the end of
@@ -319,7 +320,7 @@ pub(crate) fn sixlowpan_to_ipv6(
 
     let packet_len = total_len.unwrap_or(buf.len());
     if packet_len < uncompressed_len {
-        return Err(Error);
+        return Err(Malformed);
     }
 
     // Write forward. Each header's data is moved to its place before the
@@ -365,7 +366,7 @@ pub(crate) fn sixlowpan_to_ipv6(
             // An elided checksum can only be computed over the whole datagram.
             None if total_len.is_some() => {
                 debug!("6LoWPAN: elided UDP checksum on a fragmented packet");
-                return Err(Error);
+                return Err(Malformed);
             }
             None => !checksum::combine(&[
                 checksum::pseudo_header_v6(
@@ -529,7 +530,7 @@ pub(crate) fn ipv6_to_sixlowpan(buf: &mut PacketBuf, ieee_repr: &Ieee802154Repr)
     // ending where the header ended; what does not fit spills into the headroom.
     let extra = compressed_len.saturating_sub(IPV6_HEADER_LEN);
     if !buf.ensure_headroom(extra) {
-        return Err(Error);
+        return Err(Malformed);
     }
     buf.push_front(extra);
 

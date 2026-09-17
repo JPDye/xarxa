@@ -4,7 +4,7 @@ use core::fmt;
 #[cfg(not(feature = "alloc"))]
 use core::mem::MaybeUninit;
 
-use super::Full;
+use crate::error::Full;
 
 /// Reusable slots addressed by plain indexes: a growable list of `Option<T>`.
 ///

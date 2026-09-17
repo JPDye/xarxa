@@ -1,7 +1,8 @@
 use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
-use super::{Error, Result};
+use super::Result;
+use crate::error::Malformed;
 
 open_enum! {
     /// Ethernet protocol type.
@@ -113,10 +114,10 @@ impl<'a> Frame<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Error)` if the buffer is too short.
+    /// Returns `Err(Malformed)` if the buffer is too short.
     pub fn check_len(&self) -> Result<()> {
         let len = self.buffer.len();
-        if len < HEADER_LEN { Err(Error) } else { Ok(()) }
+        if len < HEADER_LEN { Err(Malformed) } else { Ok(()) }
     }
 
     /// Return the length of a frame header.

@@ -42,7 +42,7 @@ fn main() {
     let mut config = DhcpServerConfig::new(Ipv4Address::new(192, 168, 69, 50), Ipv4Address::new(192, 168, 69, 99));
     config.gateway = Some(server_ip);
     config.dns_servers.push(server_ip).unwrap();
-    stack.iface(iface).set_dhcpv4_server(Some(config));
+    stack.iface(iface).set_dhcpv4_server(Some(config)).unwrap();
 
     let mut known_leases = Vec::new();
     loop {

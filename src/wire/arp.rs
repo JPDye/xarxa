@@ -1,6 +1,7 @@
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::{Error, Result};
+use super::Result;
+use crate::error::Malformed;
 
 pub use super::EthernetProtocol as Protocol;
 
@@ -82,7 +83,7 @@ impl<'a> Packet<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Error)` if the buffer is too short.
+    /// Returns `Err(Malformed)` if the buffer is too short.
     ///
     /// The result of this check is invalidated by calling [set_hardware_len] or
     /// [set_protocol_len].
@@ -93,9 +94,9 @@ impl<'a> Packet<'a> {
     pub fn check_len(&self) -> Result<()> {
         let len = self.buffer.len();
         if len < field::OPER.end {
-            Err(Error)
+            Err(Malformed)
         } else if len < field::TPA(self.hardware_len(), self.protocol_len()).end {
-            Err(Error)
+            Err(Malformed)
         } else {
             Ok(())
         }

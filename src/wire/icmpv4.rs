@@ -1,6 +1,7 @@
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::{Error, Result};
+use super::Result;
+use crate::error::Malformed;
 use crate::wire::ip::checksum;
 
 open_enum! {
@@ -35,7 +36,7 @@ impl Message {
     /// Whether this message type is an error message.
     ///
     /// RFC 1122 §3.2.2 lists the error message types. Everything else is a query or
-    /// informational message. Error messages must never be sent in response to
+    /// informational message. Malformed messages must never be sent in response to
     /// another error message.
     pub fn is_error(&self) -> bool {
         matches!(
@@ -162,14 +163,18 @@ impl<'a> Packet<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Error)` if the buffer is too short.
+    /// Returns `Err(Malformed)` if the buffer is too short.
     ///
     /// The result of this check is invalidated by calling [set_header_len].
     ///
     /// [set_header_len]: #method.set_header_len
     pub fn check_len(&self) -> Result<()> {
         let len = self.buffer.len();
-        if len < field::HEADER_END { Err(Error) } else { Ok(()) }
+        if len < field::HEADER_END {
+            Err(Malformed)
+        } else {
+            Ok(())
+        }
     }
 
     /// Return the message type field.
@@ -338,8 +343,8 @@ mod test {
     #[test]
     fn test_check_len() {
         let mut bytes = [0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        assert_eq!(Packet::new_checked(&mut []), Err(Error));
-        assert_eq!(Packet::new_checked(&mut bytes[..4]), Err(Error));
+        assert_eq!(Packet::new_checked(&mut []), Err(Malformed));
+        assert_eq!(Packet::new_checked(&mut bytes[..4]), Err(Malformed));
         assert!(Packet::new_checked(&mut bytes[..]).is_ok());
     }
 }

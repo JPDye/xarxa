@@ -901,7 +901,7 @@ mod test {
         // so the tests only see the frames DHCP provokes.
         stack.poll(at(0));
         tx.borrow_mut().clear();
-        stack.iface(handle).set_dhcpv4(Some(DhcpConfig::default()));
+        stack.iface(handle).set_dhcpv4(Some(DhcpConfig::default())).unwrap();
         (stack, rx, tx, link)
     }
 
@@ -1046,7 +1046,7 @@ mod test {
 
     fn bound_stack_with(config: DhcpConfig) -> (Stack<'static>, Queue, Sent, Link) {
         let (mut stack, rx, tx, link) = test_stack_with_link();
-        stack.iface(IFACE).set_dhcpv4(Some(config));
+        stack.iface(IFACE).set_dhcpv4(Some(config)).unwrap();
 
         // First poll: DISCOVER, from 0.0.0.0 to broadcast.
         let deadline = stack.poll(at(0));
@@ -1155,7 +1155,7 @@ mod test {
 
         // Turning the client off removes what it installed.
         let generation = stack.iface(IFACE).config_generation();
-        stack.iface(IFACE).set_dhcpv4(None);
+        stack.iface(IFACE).set_dhcpv4(None).unwrap();
         assert!(stack.iface(IFACE).dhcpv4_lease().is_none());
         assert!(ipv4_addrs(&mut stack).is_empty());
         assert!(stack.routes().get_default_ipv4_route().is_none());
@@ -1178,7 +1178,7 @@ mod test {
         }
 
         // Hostname set: the retried DISCOVER carries it.
-        stack.set_hostname("xarxa-device");
+        stack.set_hostname("xarxa-device").unwrap();
         assert_eq!(stack.hostname(), Some("xarxa-device"));
         stack.poll(at(10));
         assert_eq!(tx.borrow().len(), 2);
@@ -1196,7 +1196,7 @@ mod test {
         let manual = IpCidr::new(Ipv4Address::new(10, 0, 0, 1).into(), 8);
         stack.iface(IFACE).add_ip_addr(manual).unwrap();
 
-        stack.iface(IFACE).set_dhcpv4(None);
+        stack.iface(IFACE).set_dhcpv4(None).unwrap();
         assert_eq!(ipv4_addrs(&mut stack), &[IfaceAddr::manual(manual)]);
     }
 
@@ -1389,7 +1389,7 @@ mod test {
             data: b"xarxa",
         }];
         config.parameter_request_list = Some(&[1, 3, 6, 42]);
-        stack.iface(IFACE).set_dhcpv4(Some(config));
+        stack.iface(IFACE).set_dhcpv4(Some(config)).unwrap();
         stack.poll(at(0));
         let mut sent = parse_sent(&tx.borrow()[0]);
         let packet = DhcpPacket::new_checked(&mut sent.dhcp).unwrap();
@@ -1470,5 +1470,26 @@ mod test {
         let udp = UdpPacket::new_checked(&mut frame[ETHERNET_HEADER_LEN + IPV4_HEADER_LEN..]).unwrap();
         assert_eq!(udp.dst_port(), DHCP_SERVER_PORT);
         assert_eq!(udp.checksum(), 0);
+    }
+
+    /// The client needs Ethernet: turning it on elsewhere is an error, not a
+    /// panic, and nothing is turned on.
+    #[test]
+    #[cfg(feature = "medium-ip")]
+    fn test_set_dhcpv4_wrong_medium() {
+        use crate::iface::MediumMismatch;
+
+        let driver = TestDevice::new(Medium::Ip);
+        let tx = driver.tx.clone();
+        let mut stack = Stack::new(1);
+        let handle = driver.install(&mut stack, HardwareAddress::Ip);
+        assert_eq!(
+            stack.iface(handle).set_dhcpv4(Some(DhcpConfig::default())),
+            Err(MediumMismatch)
+        );
+        assert!(stack.iface(handle).dhcpv4_lease().is_none());
+        // No DISCOVER goes out.
+        stack.poll(at(0));
+        assert!(tx.borrow().is_empty());
     }
 }

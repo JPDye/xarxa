@@ -3,7 +3,7 @@
 use core::fmt;
 use core::ops::{Deref, DerefMut};
 
-use super::Full;
+use crate::error::Full;
 
 /// A growable array, bounded to `N` items without `alloc`.
 pub(crate) struct Vec<T, const N: usize> {

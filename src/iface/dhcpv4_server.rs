@@ -84,6 +84,29 @@ impl DhcpServerConfig {
     }
 }
 
+/// Error returned by [`Iface::set_dhcpv4_server`].
+///
+/// [`Iface::set_dhcpv4_server`]: super::Iface::set_dhcpv4_server
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum DhcpServerError {
+    /// The interface is not an Ethernet interface.
+    MediumMismatch,
+    /// The pool ends before it starts: `pool_end` is below `pool_start`.
+    InvalidPool,
+}
+
+impl core::fmt::Display for DhcpServerError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            DhcpServerError::MediumMismatch => f.write_str("medium mismatch"),
+            DhcpServerError::InvalidPool => f.write_str("invalid pool"),
+        }
+    }
+}
+
+impl core::error::Error for DhcpServerError {}
+
 /// The state of one [`DhcpServerLease`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -840,7 +863,7 @@ mod test {
         // see the frames DHCP provokes.
         stack.poll(at(0));
         tx.borrow_mut().clear();
-        stack.iface(handle).set_dhcpv4_server(Some(test_config()));
+        stack.iface(handle).set_dhcpv4_server(Some(test_config())).unwrap();
         (stack, rx, tx)
     }
 
@@ -1413,6 +1436,49 @@ mod test {
         assert_eq!(DhcpPacket::new_checked(&mut sent.dhcp).unwrap().your_ip(), POOL_START);
     }
 
+    /// A backwards pool is rejected, and the running server is left as it was.
+    #[test]
+    fn test_set_server_invalid_pool() {
+        let (mut stack, rx, _tx) = test_stack();
+        assert_eq!(
+            stack
+                .iface(IFACE)
+                .set_dhcpv4_server(Some(DhcpServerConfig::new(POOL_END, POOL_START))),
+            Err(DhcpServerError::InvalidPool)
+        );
+
+        // The server configured by `test_stack` still answers.
+        bind_first_client(&mut stack, &rx, 0);
+        let bound = leases(&mut stack);
+        assert_eq!(bound.len(), 1);
+        assert_eq!(bound[0].address(), POOL_START);
+
+        // A one-address pool is fine.
+        stack
+            .iface(IFACE)
+            .set_dhcpv4_server(Some(DhcpServerConfig::new(POOL_START, POOL_START)))
+            .unwrap();
+        assert!(leases(&mut stack).is_empty());
+    }
+
+    /// The server needs Ethernet: turning it on elsewhere is an error, not a
+    /// panic, and nothing is turned on.
+    #[test]
+    #[cfg(feature = "medium-ip")]
+    fn test_set_server_wrong_medium() {
+        let mut stack = Stack::new(1);
+        let handle = TestDevice::new(Medium::Ip).install(&mut stack, HardwareAddress::Ip);
+        stack
+            .iface(handle)
+            .add_ip_addr(IpCidr::new(SERVER_IP.into(), 24))
+            .unwrap();
+        assert_eq!(
+            stack.iface(handle).set_dhcpv4_server(Some(test_config())),
+            Err(DhcpServerError::MediumMismatch)
+        );
+        assert!(stack.iface(handle).dhcpv4_server_leases().is_empty());
+    }
+
     #[test]
     fn test_remove_lease() {
         let (mut stack, rx, _tx) = test_stack();
@@ -1552,7 +1618,7 @@ mod test {
             kind: field::OPT_NTP_SERVERS,
             data: &[192, 168, 1, 2],
         }];
-        stack.iface(IFACE).set_dhcpv4_server(Some(config));
+        stack.iface(IFACE).set_dhcpv4_server(Some(config)).unwrap();
 
         send(&mut stack, &rx, Msg::new(DhcpMessageType::Discover, CLIENT_HW), 0);
         let mut sent = last_sent(&tx);
@@ -1581,7 +1647,7 @@ mod test {
         let (rx, tx) = (driver.rx.clone(), driver.tx.clone());
         let mut stack = Stack::new(1);
         let handle = driver.install(&mut stack, HardwareAddress::Ethernet(SERVER_HW));
-        stack.iface(handle).set_dhcpv4_server(Some(test_config()));
+        stack.iface(handle).set_dhcpv4_server(Some(test_config())).unwrap();
         stack.poll(at(0));
         tx.borrow_mut().clear();
 
@@ -1624,12 +1690,18 @@ mod test {
             .iface(server_iface)
             .add_ip_addr(IpCidr::new(SERVER_IP.into(), 24))
             .unwrap();
-        server_stack.iface(server_iface).set_dhcpv4_server(Some(test_config()));
+        server_stack
+            .iface(server_iface)
+            .set_dhcpv4_server(Some(test_config()))
+            .unwrap();
 
         let client_device = TestDevice::new(Medium::Ethernet);
         let mut client_stack = Stack::new(2);
         let client_iface = client_device.install(&mut client_stack, HardwareAddress::Ethernet(CLIENT_HW));
-        client_stack.iface(client_iface).set_dhcpv4(Some(DhcpConfig::default()));
+        client_stack
+            .iface(client_iface)
+            .set_dhcpv4(Some(DhcpConfig::default()))
+            .unwrap();
 
         for t in 0..10 {
             client_stack.poll(at(t));

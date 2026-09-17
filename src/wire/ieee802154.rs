@@ -2,7 +2,8 @@
 
 use core::fmt;
 
-use super::{Error, Result, take};
+use super::{Result, take};
+use crate::error::Malformed;
 use crate::wire::Ipv6Address;
 
 open_enum! {
@@ -268,7 +269,7 @@ fn parse_addr(buf: &[u8], offset: &mut usize, mode: AddressingMode) -> Result<Ad
             bytes.reverse();
             Ok(Address::Extended(bytes))
         }
-        _ => Err(Error),
+        _ => Err(Malformed),
     }
 }
 
@@ -296,13 +297,13 @@ impl Repr {
     /// included. The payload starts at that offset.
     ///
     /// Errors:
-    /// - `Error` if the buffer is shorter than the header, or longer than 127
+    /// - `Malformed` if the buffer is shorter than the header, or longer than 127
     ///   bytes, or the frame version or an addressing mode is unknown.
     pub fn parse(buf: &[u8]) -> Result<(Repr, usize)> {
         // A frame is at most 127 bytes, and starts with the frame control
         // field and a sequence number.
         if buf.len() < 3 || buf.len() > 127 {
-            return Err(Error);
+            return Err(Malformed);
         }
 
         let fc = u16::from_le_bytes([buf[0], buf[1]]);
@@ -320,7 +321,7 @@ impl Repr {
             frame_version,
             FrameVersion::Ieee802154_2003 | FrameVersion::Ieee802154_2006 | FrameVersion::Ieee802154
         ) {
-            return Err(Error);
+            return Err(Malformed);
         }
 
         // We don't handle unknown addressing modes.
@@ -329,7 +330,7 @@ impl Repr {
                 mode,
                 AddressingMode::Absent | AddressingMode::Short | AddressingMode::Extended
             ) {
-                return Err(Error);
+                return Err(Malformed);
             }
         }
 
@@ -341,7 +342,7 @@ impl Repr {
             && dst_addr_mode == AddressingMode::Absent
             && src_addr_mode == AddressingMode::Absent
         {
-            return Err(Error);
+            return Err(Malformed);
         }
 
         let sequence_number = match frame_type {
@@ -381,7 +382,7 @@ impl Repr {
         if security_enabled {
             // The security control byte, then the frame counter and the key
             // identifier its bits say are there.
-            let b = *buf.get(offset).ok_or(Error)?;
+            let b = *buf.get(offset).ok_or(Malformed)?;
             let frame_counter_suppressed = (b >> 5) & 0b1 == 0b1;
             let key_identifier_len = match (b >> 3) & 0b11 {
                 0 => 0,
@@ -391,7 +392,7 @@ impl Repr {
             };
             offset += 1 + if frame_counter_suppressed { 0 } else { 4 } + key_identifier_len;
             if offset > buf.len() {
-                return Err(Error);
+                return Err(Malformed);
             }
         }
 
@@ -700,9 +701,9 @@ mod test {
         ];
         assert!(Repr::parse(&frame).is_ok());
         for len in 0..frame.len() {
-            assert_eq!(Repr::parse(&frame[..len]), Err(Error));
+            assert_eq!(Repr::parse(&frame[..len]), Err(Malformed));
         }
         // Frames longer than 127 bytes are not valid either.
-        assert_eq!(Repr::parse(&[0u8; 128]), Err(Error));
+        assert_eq!(Repr::parse(&[0u8; 128]), Err(Malformed));
     }
 }

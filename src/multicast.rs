@@ -3,7 +3,8 @@
 // which `iface` re-exports.
 
 use crate::config::MULTICAST_GROUP_COUNT;
-use crate::storage::{Full, Vec};
+use crate::error::Full;
+use crate::storage::Vec;
 use core::result::Result;
 
 use crate::driver::PacketBuf;

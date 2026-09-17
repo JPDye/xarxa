@@ -1,7 +1,8 @@
 //! IPv6 extension headers (RFC 8200 §4): the common (next header, length) prefix,
 //! and the TLV option walk shared by the Hop-by-Hop and Destination Options headers.
 
-use super::{Error, Result};
+use super::Result;
+use crate::error::Malformed;
 use crate::wire::ip::Protocol;
 
 /// A read wrapper around an IPv6 extension header.
@@ -38,10 +39,10 @@ impl<'a> ExtHeader<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Error)` if the buffer is too short.
+    /// Returns `Err(Malformed)` if the buffer is too short.
     pub fn check_len(&self) -> Result<()> {
         if self.buffer.len() < field::DATA_START || self.buffer.len() < self.header_len() {
-            Err(Error)
+            Err(Malformed)
         } else {
             Ok(())
         }
@@ -174,7 +175,7 @@ impl<'a> Iterator for OptionsIter<'a> {
             }
             None => {
                 self.offset = usize::MAX;
-                Some(Err(Error))
+                Some(Err(Malformed))
             }
         }
     }
@@ -203,8 +204,8 @@ mod test {
         );
 
         // Too short for the length it claims.
-        assert_eq!(ExtHeader::new_checked(&bytes[..7]), Err(Error));
-        assert_eq!(ExtHeader::new_checked(&[0x11]), Err(Error));
+        assert_eq!(ExtHeader::new_checked(&bytes[..7]), Err(Malformed));
+        assert_eq!(ExtHeader::new_checked(&[0x11]), Err(Malformed));
     }
 
     #[test]
@@ -213,7 +214,7 @@ mod test {
         let options = [0x00, 0x02, 0x40];
         let mut iter = OptionsIter::new(&options);
         assert_eq!(iter.next(), Some(Ok((0, OptionType::Pad1, &[][..]))));
-        assert_eq!(iter.next(), Some(Err(Error)));
+        assert_eq!(iter.next(), Some(Err(Malformed)));
         assert_eq!(iter.next(), None);
     }
 

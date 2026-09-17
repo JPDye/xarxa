@@ -1,7 +1,8 @@
 use core::convert::From;
 use core::fmt;
 
-use super::{Error, Result};
+use super::Result;
+use crate::error::Malformed;
 #[cfg(feature = "ipv4")]
 use crate::wire::{Ipv4Address, Ipv4AddressExt, Ipv4Cidr};
 #[cfg(feature = "ipv6")]
@@ -21,14 +22,14 @@ impl Version {
     /// Return the version of an IP packet stored in the provided buffer.
     ///
     /// This function never returns `Ok(IpVersion::Unspecified)`; instead,
-    /// unknown versions result in `Err(Error)`.
+    /// unknown versions result in `Err(Malformed)`.
     pub const fn of_packet(data: &[u8]) -> Result<Version> {
         match data[0] >> 4 {
             #[cfg(feature = "ipv4")]
             4 => Ok(Version::Ipv4),
             #[cfg(feature = "ipv6")]
             6 => Ok(Version::Ipv6),
-            _ => Err(Error),
+            _ => Err(Malformed),
         }
     }
 }

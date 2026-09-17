@@ -8,7 +8,8 @@
 use core::fmt;
 
 use crate::driver::ChecksumCapabilities;
-use crate::wire::{Error, IpAddress, Result, TCP_HEADER_LEN, TcpControl, TcpOption, TcpPacket, TcpSeqNumber};
+use crate::error::Malformed;
+use crate::wire::{IpAddress, Result, TCP_HEADER_LEN, TcpControl, TcpOption, TcpPacket, TcpSeqNumber};
 
 /// A high-level representation of a Transmission Control Protocol packet.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -64,10 +65,10 @@ impl<'a> TcpRepr<'a> {
 
         // Source and destination ports must be present.
         if packet.src_port() == 0 {
-            return Err(Error);
+            return Err(Malformed);
         }
         if packet.dst_port() == 0 {
-            return Err(Error);
+            return Err(Malformed);
         }
 
         let control = match (packet.syn(), packet.fin(), packet.rst(), packet.psh()) {
@@ -76,7 +77,7 @@ impl<'a> TcpRepr<'a> {
             (true, false, false, _) => TcpControl::Syn,
             (false, true, false, _) => TcpControl::Fin,
             (false, false, true, _) => TcpControl::Rst,
-            _ => return Err(Error),
+            _ => return Err(Malformed),
         };
         let ack_number = match packet.ack() {
             true => Some(packet.ack_number()),

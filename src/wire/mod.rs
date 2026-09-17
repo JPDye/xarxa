@@ -34,7 +34,7 @@ mod field {
 /// layout depends on their own fields.
 #[cfg(feature = "medium-ieee802154")]
 pub(crate) fn take<'a>(buf: &'a [u8], offset: &mut usize, n: usize) -> Result<&'a [u8]> {
-    let bytes = buf.get(*offset..*offset + n).ok_or(Error)?;
+    let bytes = buf.get(*offset..*offset + n).ok_or(Malformed)?;
     *offset += n;
     Ok(bytes)
 }
@@ -81,6 +81,7 @@ mod udp;
 
 use core::fmt;
 
+use crate::error::Malformed;
 use crate::iface::Medium;
 
 pub use self::ethernet::{
@@ -215,22 +216,8 @@ pub use self::dns::{
     Rcode as DnsRcode, Record as DnsRecord, RecordData as DnsRecordData, Type as DnsType,
 };
 
-/// Parsing a packet failed.
-///
-/// Either it is malformed, or it is not supported by xarxa.
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Error;
-
-impl core::error::Error for Error {}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "wire::Error")
-    }
-}
-
-pub type Result<T> = core::result::Result<T, Error>;
+/// Shorthand for a wire-layer parse result.
+pub type Result<T> = core::result::Result<T, crate::error::Malformed>;
 
 /// A hardware (link-layer) address.
 ///
@@ -471,7 +458,7 @@ impl RawHardwareAddress {
     /// Parse the address as an address of the given medium.
     ///
     /// Errors:
-    /// - `Error` if the length is wrong for the medium: 6 bytes for Ethernet,
+    /// - `Malformed` if the length is wrong for the medium: 6 bytes for Ethernet,
     ///   8 (an extended address) for IEEE 802.15.4, or if the medium has no
     ///   addresses.
     pub fn parse(&self, medium: Medium) -> Result<HardwareAddress> {
@@ -479,21 +466,21 @@ impl RawHardwareAddress {
             #[cfg(feature = "medium-ethernet")]
             Medium::Ethernet => {
                 if self.len() != 6 {
-                    return Err(Error);
+                    return Err(Malformed);
                 }
                 Ok(HardwareAddress::Ethernet(EthernetAddress::from_bytes(self.as_bytes())))
             }
             #[cfg(feature = "medium-ieee802154")]
             Medium::Ieee802154 => {
                 if self.len() != 8 {
-                    return Err(Error);
+                    return Err(Malformed);
                 }
                 Ok(HardwareAddress::Ieee802154(Ieee802154Address::from_bytes(
                     self.as_bytes(),
                 )))
             }
             #[cfg(feature = "medium-ip")]
-            Medium::Ip => Err(Error),
+            Medium::Ip => Err(Malformed),
         }
     }
 }
@@ -554,10 +541,10 @@ mod test {
             parse(&[0u8; 6]),
             Ok(HardwareAddress::Ethernet(EthernetAddress([0, 0, 0, 0, 0, 0])))
         );
-        assert_eq!(parse(&[1u8; 5]), Err(Error));
+        assert_eq!(parse(&[1u8; 5]), Err(Malformed));
         // A 7-byte address only fits `RawHardwareAddress` with `medium-ieee802154`.
         #[cfg(feature = "medium-ieee802154")]
-        assert_eq!(parse(&[1u8; 7]), Err(Error));
+        assert_eq!(parse(&[1u8; 7]), Err(Malformed));
     }
 
     #[test]
@@ -568,7 +555,7 @@ mod test {
             parse(&[0u8; 8]),
             Ok(HardwareAddress::Ieee802154(Ieee802154Address::Extended([0; 8])))
         );
-        assert_eq!(parse(&[1u8; 2]), Err(Error));
-        assert_eq!(parse(&[1u8; 1]), Err(Error));
+        assert_eq!(parse(&[1u8; 2]), Err(Malformed));
+        assert_eq!(parse(&[1u8; 1]), Err(Malformed));
     }
 }

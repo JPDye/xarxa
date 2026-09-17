@@ -3,7 +3,7 @@
 use core::fmt;
 use core::ops::{Deref, DerefMut};
 
-use super::Full;
+use crate::error::Full;
 
 /// A growable array holding at most `N` items, with or without `alloc`.
 ///

@@ -42,7 +42,7 @@ fn main() {
     // from the lease below.
     let mut config = DhcpConfig::default();
     config.parameter_request_list = Some(&[1, 3, 6, 42]);
-    stack.iface(iface).set_dhcpv4(Some(config));
+    stack.iface(iface).set_dhcpv4(Some(config)).unwrap();
 
     let mut generation = stack.iface(iface).config_generation();
     loop {

@@ -1,6 +1,7 @@
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::{Error, Result};
+use super::Result;
+use crate::error::Malformed;
 use crate::wire::ip::checksum;
 use crate::wire::{IpAddress, IpProtocol};
 
@@ -40,8 +41,8 @@ impl<'a> Packet<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Error)` if the buffer is too short.
-    /// Returns `Err(Error)` if the length field has a value smaller
+    /// Returns `Err(Malformed)` if the buffer is too short.
+    /// Returns `Err(Malformed)` if the length field has a value smaller
     /// than the header length, or larger than the buffer.
     ///
     /// The result of this check is invalidated by calling [set_len].
@@ -50,11 +51,11 @@ impl<'a> Packet<'a> {
     pub fn check_len(&self) -> Result<()> {
         let buffer_len = self.buffer.len();
         if buffer_len < HEADER_LEN {
-            return Err(Error);
+            return Err(Malformed);
         }
         let field_len = self.len() as usize;
         if buffer_len < field_len || field_len < HEADER_LEN {
-            return Err(Error);
+            return Err(Malformed);
         }
         Ok(())
     }
@@ -215,7 +216,7 @@ mod test {
         let mut bytes = vec![0; 12];
         let mut packet = Packet::new_unchecked(&mut bytes);
         packet.set_len(4);
-        assert_eq!(packet.check_len(), Err(Error));
+        assert_eq!(packet.check_len(), Err(Malformed));
     }
 
     #[test]

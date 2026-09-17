@@ -15,7 +15,8 @@
 //! [`Stack::routes_mut`]: crate::Stack::routes_mut
 
 use crate::config::ROUTE_COUNT;
-use crate::storage::{Full, Vec};
+use crate::error::Full;
+use crate::storage::Vec;
 
 use crate::iface::IfaceHandle;
 use crate::stack::IfaceBinding;

@@ -4,7 +4,8 @@ use bitflags::bitflags;
 use byteorder::{ByteOrder, NetworkEndian};
 use core::iter;
 
-use super::{Error, Result};
+use super::Result;
+use crate::error::Malformed;
 use crate::wire::arp::Hardware;
 use crate::wire::{EthernetAddress, Ipv4Address};
 
@@ -87,12 +88,12 @@ impl<'a> OptionWriter<'a> {
     /// remaining space.
     pub fn emit(&mut self, option: DhcpOption<'_>) -> Result<()> {
         if option.data.len() > u8::MAX as _ {
-            return Err(Error);
+            return Err(Malformed);
         }
 
         let total_len = 2 + option.data.len();
         if self.buffer.len() < total_len {
-            return Err(Error);
+            return Err(Malformed);
         }
 
         let (buf, rest) = core::mem::take(&mut self.buffer).split_at_mut(total_len);
@@ -111,7 +112,7 @@ impl<'a> OptionWriter<'a> {
     /// Errors if there is no space left.
     pub fn end(&mut self) -> Result<()> {
         if self.buffer.is_empty() {
-            return Err(Error);
+            return Err(Malformed);
         }
 
         self.buffer[0] = field::OPT_END;
@@ -296,10 +297,10 @@ impl<'a> Packet<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Error)` if the buffer is too short.
+    /// Returns `Err(Malformed)` if the buffer is too short.
     pub fn check_len(&self) -> Result<()> {
         let len = self.buffer.len();
-        if len < HEADER_LEN { Err(Error) } else { Ok(()) }
+        if len < HEADER_LEN { Err(Malformed) } else { Ok(()) }
     }
 
     /// Return the operation code of this packet.
@@ -435,7 +436,7 @@ impl<'a> Packet<'a> {
     pub fn message_type(&self) -> Result<MessageType> {
         match self.option(field::OPT_DHCP_MESSAGE_TYPE) {
             Some(&[value]) => Ok(MessageType::from(value)),
-            _ => Err(Error),
+            _ => Err(Malformed),
         }
     }
 
@@ -444,12 +445,12 @@ impl<'a> Packet<'a> {
     /// Errors if it is empty or not valid UTF-8.
     pub fn get_sname(&self) -> Result<&str> {
         let data = &self.buffer[field::SNAME];
-        let len = data.iter().position(|&x| x == 0).ok_or(Error)?;
+        let len = data.iter().position(|&x| x == 0).ok_or(Malformed)?;
         if len == 0 {
-            return Err(Error);
+            return Err(Malformed);
         }
 
-        let data = core::str::from_utf8(&data[..len]).map_err(|_| Error)?;
+        let data = core::str::from_utf8(&data[..len]).map_err(|_| Malformed)?;
         Ok(data)
     }
 
@@ -458,11 +459,11 @@ impl<'a> Packet<'a> {
     /// Errors if it is empty or not valid UTF-8.
     pub fn get_boot_file(&self) -> Result<&str> {
         let data = &self.buffer[field::FILE];
-        let len = data.iter().position(|&x| x == 0).ok_or(Error)?;
+        let len = data.iter().position(|&x| x == 0).ok_or(Malformed)?;
         if len == 0 {
-            return Err(Error);
+            return Err(Malformed);
         }
-        let data = core::str::from_utf8(&data[..len]).map_err(|_| Error)?;
+        let data = core::str::from_utf8(&data[..len]).map_err(|_| Malformed)?;
         Ok(data)
     }
 
@@ -733,8 +734,8 @@ mod test {
         let mut bytes = [0u8; 4];
         let mut writer = OptionWriter::new(&mut bytes);
         assert_eq!(writer.emit(DhcpOption { kind: 1, data: &[1, 2] }), Ok(()));
-        assert_eq!(writer.emit(DhcpOption { kind: 1, data: &[1] }), Err(Error));
-        assert_eq!(writer.end(), Err(Error));
+        assert_eq!(writer.emit(DhcpOption { kind: 1, data: &[1] }), Err(Malformed));
+        assert_eq!(writer.end(), Err(Malformed));
         assert_eq!(writer.written(), 4);
     }
 
@@ -772,6 +773,6 @@ mod test {
         let mut writer = OptionWriter::new(&mut bytes);
         let hostname: [u8; 256] = ['a' as u8; 256];
         let hostname_opt = DhcpOption::hostname(&hostname);
-        assert_eq!(writer.emit(hostname_opt), Err(Error));
+        assert_eq!(writer.emit(hostname_opt), Err(Malformed));
     }
 }

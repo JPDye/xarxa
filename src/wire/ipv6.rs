@@ -3,7 +3,8 @@
 use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
-use super::{Error, Result};
+use super::Result;
+use crate::error::Malformed;
 
 pub use super::IpProtocol as Protocol;
 
@@ -362,7 +363,7 @@ impl<'a> Packet<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Error)` if the buffer is too short.
+    /// Returns `Err(Malformed)` if the buffer is too short.
     ///
     /// The result of this check is invalidated by calling [set_payload_len].
     ///
@@ -371,7 +372,7 @@ impl<'a> Packet<'a> {
     pub fn check_len(&self) -> Result<()> {
         let len = self.buffer.len();
         if len < field::DST_ADDR.end || len < self.total_len() {
-            Err(Error)
+            Err(Malformed)
         } else {
             Ok(())
         }
@@ -862,6 +863,6 @@ pub(crate) mod test {
         bytes.extend(&REPR_PACKET_BYTES[..]);
         Packet::new_unchecked(&mut bytes).set_payload_len(0x80);
 
-        assert_eq!(Packet::new_checked(&mut bytes).unwrap_err(), Error);
+        assert_eq!(Packet::new_checked(&mut bytes).unwrap_err(), Malformed);
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! [RFC 6282 § 3.1]: https://datatracker.ietf.org/doc/html/rfc6282#section-3.1
 
-use super::{AddressContext, DISPATCH_IPHC_HEADER, Error, NextHeader, Result};
+use super::{AddressContext, DISPATCH_IPHC_HEADER, Malformed, NextHeader, Result};
 use crate::wire::take;
 use crate::wire::{IpProtocol, ieee802154::Address as LlAddress, ipv6, ipv6::AddressExt};
 
@@ -18,14 +18,14 @@ const EUI64_MIDDLE_VALUE: [u8; 2] = [0xff, 0xfe];
 fn ll_iid(ll_addr: Option<LlAddress>) -> Result<[u8; 8]> {
     match ll_addr {
         Some(LlAddress::Short(ll)) => Ok([0, 0, 0, 0xff, 0xfe, 0, ll[0], ll[1]]),
-        Some(addr @ LlAddress::Extended(_)) => addr.as_eui_64().ok_or(Error),
-        Some(LlAddress::Absent) | None => Err(Error),
+        Some(addr @ LlAddress::Extended(_)) => addr.as_eui_64().ok_or(Malformed),
+        Some(LlAddress::Absent) | None => Err(Malformed),
     }
 }
 
 /// Overwrite the prefix of `bytes` with the address context `index` refers to.
 fn apply_context(addr_context: &[AddressContext], index: usize, bytes: &mut [u8; 16]) -> Result<()> {
-    let context = addr_context.get(index).ok_or(Error)?;
+    let context = addr_context.get(index).ok_or(Malformed)?;
     bytes[..context.0.len()].copy_from_slice(&context.0);
     Ok(())
 }
@@ -165,7 +165,7 @@ impl Repr {
     /// Elided address bits are restored from them.
     ///
     /// Errors:
-    /// - `Error` if the buffer is too short, is not an IPHC header, an
+    /// - `Malformed` if the buffer is too short, is not an IPHC header, an
     ///   encoding is reserved or unsupported, or an address refers to a
     ///   context or link-layer address that is not there.
     pub fn parse(
@@ -175,11 +175,11 @@ impl Repr {
         addr_context: &[AddressContext],
     ) -> Result<(Self, usize)> {
         if buf.len() < 2 {
-            return Err(Error);
+            return Err(Malformed);
         }
         let iphc = u16::from_be_bytes([buf[0], buf[1]]);
         if iphc >> 13 != DISPATCH_IPHC_HEADER as u16 {
-            return Err(Error);
+            return Err(Malformed);
         }
         let tf = ((iphc >> 11) & 0b11) as u8;
         let nh = (iphc >> 10) & 1 != 0;
@@ -302,7 +302,7 @@ impl Repr {
                 ipv6::Address::from_octets(bytes)
             }
             // Reserved.
-            (false, true, 0b00) => return Err(Error),
+            (false, true, 0b00) => return Err(Malformed),
             (false, true, 0b01) => {
                 bytes[8..].copy_from_slice(take(buf, &mut offset, 8)?);
                 apply_context(addr_context, dst_context, &mut bytes)?;
@@ -345,7 +345,7 @@ impl Repr {
                 ipv6::Address::from_octets(bytes)
             }
             // Unicast-prefix-based multicast (unsupported), and reserved.
-            (true, true, _) => return Err(Error),
+            (true, true, _) => return Err(Malformed),
             _ => unreachable!(),
         };
 

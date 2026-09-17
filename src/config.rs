@@ -32,7 +32,7 @@ pub(crate) use raw::{dns_query_index, iface_index, raw_index, tcp_index, tcp_lis
 
 /// Max interfaces a [`Stack`](crate::Stack) can hold at once.
 ///
-/// Adding one past this many fails with [`Full`](crate::Full).
+/// Adding one past this many fails with [`Full`](crate::error::Full).
 ///
 /// Ignored with `alloc`. Default: 2.
 pub const IFACE_COUNT: usize = raw::IFACE_COUNT;
@@ -41,7 +41,7 @@ pub const IFACE_COUNT: usize = raw::IFACE_COUNT;
 ///
 /// This counts addresses from all sources: set by the application, learned from
 /// DHCP, formed by SLAAC. Adding one past this many fails with
-/// [`Full`](crate::Full).
+/// [`Full`](crate::error::Full).
 ///
 /// Ignored with `alloc`. Default: 4.
 pub const IFACE_ADDR_COUNT: usize = raw::IFACE_ADDR_COUNT;
@@ -50,7 +50,7 @@ pub const IFACE_ADDR_COUNT: usize = raw::IFACE_ADDR_COUNT;
 ///
 /// This counts routes from all sources: added by the application, learned from
 /// DHCP or from router advertisements. Adding one past this many fails with
-/// [`Full`](crate::Full).
+/// [`Full`](crate::error::Full).
 ///
 /// Ignored with `alloc`. Default: 4.
 pub const ROUTE_COUNT: usize = raw::ROUTE_COUNT;
@@ -80,7 +80,7 @@ pub const SLAAC_ROUTER_COUNT: usize = raw::SLAAC_ROUTER_COUNT;
 /// Max 6LoWPAN address contexts an interface can hold at once.
 ///
 /// Contexts are used to decompress addresses of incoming packets. Setting more
-/// than this many fails with [`Full`](crate::Full). A packet can only name 16 of
+/// than this many fails with [`Full`](crate::error::Full). A packet can only name 16 of
 /// them, since the context identifier is 4 bits wide.
 ///
 /// Ignored with `alloc`. Default: 4.
@@ -109,28 +109,28 @@ pub const PENDING_QUEUE_COUNT: usize = raw::PENDING_QUEUE_COUNT;
 
 /// Max UDP sockets a [`Stack`](crate::Stack) can hold at once.
 ///
-/// Adding one past this many fails with [`Full`](crate::Full).
+/// Adding one past this many fails with [`Full`](crate::error::Full).
 ///
 /// Ignored with `alloc`. Default: 4.
 pub const UDP_SOCKET_COUNT: usize = raw::UDP_SOCKET_COUNT;
 
 /// Max raw sockets a [`Stack`](crate::Stack) can hold at once.
 ///
-/// Adding one past this many fails with [`Full`](crate::Full).
+/// Adding one past this many fails with [`Full`](crate::error::Full).
 ///
 /// Ignored with `alloc`. Default: 2.
 pub const RAW_SOCKET_COUNT: usize = raw::RAW_SOCKET_COUNT;
 
 /// Max TCP sockets a [`Stack`](crate::Stack) can hold at once.
 ///
-/// Adding one past this many fails with [`Full`](crate::Full).
+/// Adding one past this many fails with [`Full`](crate::error::Full).
 ///
 /// Ignored with `alloc`. Default: 4.
 pub const TCP_SOCKET_COUNT: usize = raw::TCP_SOCKET_COUNT;
 
 /// Max TCP listeners a [`Stack`](crate::Stack) can hold at once.
 ///
-/// Adding one past this many fails with [`Full`](crate::Full).
+/// Adding one past this many fails with [`Full`](crate::error::Full).
 ///
 /// Ignored with `alloc`. Default: 2.
 pub const TCP_LISTENER_COUNT: usize = raw::TCP_LISTENER_COUNT;

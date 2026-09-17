@@ -4,6 +4,7 @@
 //! arrives (from the network or generated locally when neighbor resolution fails)
 //! it contains a "quoted" packet inside we can use to identify which socket was the cause.
 
+use crate::error::IcmpError;
 #[cfg(feature = "tcp")]
 use crate::wire::TcpSeqNumber;
 #[cfg(all(feature = "ipv4", any(feature = "udp", feature = "tcp")))]
@@ -12,46 +13,6 @@ use crate::wire::{IPV4_HEADER_LEN, Icmpv4DstUnreachable, Icmpv4Message, Ipv4Pack
 use crate::wire::{IPV6_HEADER_LEN, Icmpv6DstUnreachable, Icmpv6Message, Ipv6ExtHeader, Ipv6Packet};
 #[cfg(any(feature = "udp", feature = "tcp"))]
 use crate::wire::{IpAddress, IpProtocol, IpVersion};
-
-/// ICMP error reported against a socket.
-///
-/// Returned by `take_icmp_error` on UDP and TCP sockets (and by
-/// [`UdpSocket::recv`](crate::udp::UdpSocket::recv)) when an ICMP error message quoting
-/// one of the socket's packets arrives. Requires the `icmp-errors` cargo
-/// feature.
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum IcmpError {
-    /// The destination network is unreachable (`ENETUNREACH`).
-    NetUnreachable,
-    /// The destination host is unreachable (`EHOSTUNREACH`). Also reported when
-    /// the stack's own neighbor resolution (ARP/NDISC) for the destination fails.
-    HostUnreachable,
-    /// The destination host does not speak this protocol (`EPROTO`).
-    ProtoUnreachable,
-    /// Nothing is listening on the destination port (`ECONNREFUSED`).
-    PortUnreachable,
-    /// The packet was too big for a link on the path and could not be fragmented
-    /// (`EMSGSIZE`): ICMPv4 "fragmentation needed and DF set" / ICMPv6 packet too
-    /// big.
-    PacketTooBig,
-    /// Any other error: time exceeded, parameter problem, source route failed, ...
-    Other,
-}
-
-impl core::fmt::Display for IcmpError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            IcmpError::NetUnreachable => write!(f, "network unreachable"),
-            IcmpError::HostUnreachable => write!(f, "host unreachable"),
-            IcmpError::ProtoUnreachable => write!(f, "protocol unreachable"),
-            IcmpError::PortUnreachable => write!(f, "port unreachable"),
-            IcmpError::PacketTooBig => write!(f, "packet too big"),
-            IcmpError::Other => write!(f, "other ICMP error"),
-        }
-    }
-}
 
 impl IcmpError {
     /// Condense an ICMPv4 error message's type and code, `None` if the message is

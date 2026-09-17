@@ -15,7 +15,8 @@ use core::cmp::min;
 use core::task::Waker;
 
 use crate::config::{DNS_MAX_NAME_SIZE, DNS_MAX_QUERY_COUNT, DNS_MAX_RESULT_COUNT, DNS_MAX_SERVER_COUNT};
-use crate::storage::{Full, Slab};
+use crate::error::Full;
+use crate::storage::Slab;
 use heapless::Vec;
 
 use crate::stack::Stack;
@@ -660,17 +661,17 @@ fn eq_names<'a>(
 fn copy_name<'a, const N: usize>(
     dest: &mut Vec<u8, N>,
     name: impl Iterator<Item = wire::Result<&'a [u8]>>,
-) -> Result<(), wire::Error> {
+) -> Result<(), crate::error::Malformed> {
     dest.truncate(0);
 
     for label in name {
         let label = label?;
-        dest.push(label.len() as u8).map_err(|_| wire::Error)?;
-        dest.extend_from_slice(label).map_err(|_| wire::Error)?;
+        dest.push(label.len() as u8).map_err(|_| crate::error::Malformed)?;
+        dest.extend_from_slice(label).map_err(|_| crate::error::Malformed)?;
     }
 
     // Write terminator 0x00
-    dest.push(0).map_err(|_| wire::Error)?;
+    dest.push(0).map_err(|_| crate::error::Malformed)?;
 
     Ok(())
 }

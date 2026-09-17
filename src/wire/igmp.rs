@@ -1,6 +1,7 @@
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::{Error, Result};
+use super::Result;
+use crate::error::Malformed;
 use crate::time::Duration;
 use crate::wire::Ipv4Address;
 use crate::wire::ip::checksum;
@@ -68,11 +69,11 @@ impl<'a> Packet<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Error)` if the buffer is too short.
+    /// Returns `Err(Malformed)` if the buffer is too short.
     pub fn check_len(&self) -> Result<()> {
         let len = self.buffer.len();
         if len < field::GROUP_ADDRESS.end {
-            Err(Error)
+            Err(Malformed)
         } else {
             Ok(())
         }

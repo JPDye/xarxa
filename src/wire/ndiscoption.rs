@@ -1,7 +1,8 @@
 use bitflags::bitflags;
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::{Error, Result};
+use super::Result;
+use crate::error::Malformed;
 use crate::time::Duration;
 use crate::wire::{Ipv6Address, MAX_HARDWARE_ADDRESS_LEN};
 
@@ -145,14 +146,14 @@ impl<'a> NdiscOption<'a> {
 
         // A data length field of 0 is invalid.
         if opt.data_len() == 0 {
-            return Err(Error);
+            return Err(Malformed);
         }
 
         Ok(opt)
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Error)` if the buffer is too short.
+    /// Returns `Err(Malformed)` if the buffer is too short.
     ///
     /// The result of this check is invalidated by calling [set_data_len].
     ///
@@ -161,17 +162,17 @@ impl<'a> NdiscOption<'a> {
         let len = self.buffer.len();
 
         if len < field::MIN_OPT_LEN {
-            Err(Error)
+            Err(Malformed)
         } else {
             let data_range = field::DATA(self.buffer[field::LENGTH]);
             if len < data_range.end {
-                Err(Error)
+                Err(Malformed)
             } else {
                 match self.option_type() {
                     Type::SourceLinkLayerAddr | Type::TargetLinkLayerAddr | Type::Mtu => Ok(()),
                     Type::PrefixInformation if data_range.end >= field::PREFIX.end => Ok(()),
                     Type::RedirectedHeader if data_range.end >= field::REDIR_MIN_SZ => Ok(()),
-                    Type::PrefixInformation | Type::RedirectedHeader => Err(Error),
+                    Type::PrefixInformation | Type::RedirectedHeader => Err(Malformed),
                     _ => Ok(()),
                 }
             }
@@ -344,7 +345,7 @@ impl<'a> NdiscOption<'a> {
 
 #[cfg(test)]
 mod test {
-    use super::Error;
+    use super::Malformed;
     use super::{NdiscOption, PrefixInfoFlags, Type};
     use crate::wire::Ipv6Address;
 
@@ -388,9 +389,9 @@ mod test {
 
     #[test]
     fn test_short_packet() {
-        assert_eq!(NdiscOption::new_checked(&mut [0x00, 0x00]), Err(Error));
+        assert_eq!(NdiscOption::new_checked(&mut [0x00, 0x00]), Err(Malformed));
         let mut bytes = [0x03, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        assert_eq!(NdiscOption::new_checked(&mut bytes), Err(Error));
+        assert_eq!(NdiscOption::new_checked(&mut bytes), Err(Malformed));
     }
 }
 

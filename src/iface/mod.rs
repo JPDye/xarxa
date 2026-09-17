@@ -22,10 +22,11 @@ pub use crate::multicast::MulticastError;
 use crate::config::{IFACE_ADDR_COUNT, IFACE_COUNT};
 use crate::driver::config::PACKET_BUF_SIZE;
 use crate::driver::{Capabilities, ChecksumCapabilities, Driver, LinkState};
+use crate::error::Full;
 #[cfg(any(feature = "ipv4-fragmentation", feature = "sixlowpan-fragmentation"))]
 use crate::fragmentation::Fragmenter;
 use crate::stack::{Stack, StackInner};
-use crate::storage::{Full, MaybeBox, Slab, Vec};
+use crate::storage::{MaybeBox, Slab, Vec};
 use crate::time::Instant;
 use crate::wire::*;
 
@@ -33,6 +34,83 @@ define_handle! {
     /// A handle to an interface added to a [`Stack`].
     IfaceHandle(crate::config::iface_index)
 }
+
+/// Error returned by [`Stack::add_iface`] and [`Stack::add_iface_borrowed`].
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddIfaceError {
+    /// The stack has no room for another interface. Only possible without the
+    /// `alloc` feature, where the limit is [`IFACE_COUNT`].
+    Full,
+    /// The build has no `medium-*` feature for the device's medium.
+    UnsupportedMedium,
+    /// The hardware address the device reports is not of the kind its medium
+    /// uses.
+    HardwareAddrMismatch,
+}
+
+impl From<Full> for AddIfaceError {
+    fn from(_: Full) -> Self {
+        AddIfaceError::Full
+    }
+}
+
+impl core::fmt::Display for AddIfaceError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            AddIfaceError::Full => f.write_str("full"),
+            AddIfaceError::UnsupportedMedium => f.write_str("unsupported medium"),
+            AddIfaceError::HardwareAddrMismatch => f.write_str("hardware address does not match the medium"),
+        }
+    }
+}
+
+impl core::error::Error for AddIfaceError {}
+
+/// Error returned by [`Iface::add_ip_addr`] and [`Iface::set_ip_addrs`].
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddrError {
+    /// The address is not unicast: it is unspecified, multicast or broadcast.
+    NotUnicast,
+    /// The interface has no room for another address. Only possible without
+    /// the `alloc` feature, where the limit is [`IFACE_ADDR_COUNT`].
+    Full,
+}
+
+impl From<Full> for AddrError {
+    fn from(_: Full) -> Self {
+        AddrError::Full
+    }
+}
+
+impl core::fmt::Display for AddrError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            AddrError::NotUnicast => f.write_str("not unicast"),
+            AddrError::Full => f.write_str("full"),
+        }
+    }
+}
+
+impl core::error::Error for AddrError {}
+
+/// The interface's medium can not do this.
+///
+/// Returned by [`Iface::set_hardware_addr`] when the address is of another
+/// medium's kind, and by the methods that turn on an address
+/// autoconfiguration the medium does not support.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MediumMismatch;
+
+impl core::fmt::Display for MediumMismatch {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("medium mismatch")
+    }
+}
+
+impl core::error::Error for MediumMismatch {}
 
 /// Type of medium of an interface.
 ///
@@ -266,15 +344,13 @@ impl<'d> Iface<'_, 'd> {
     /// is accepted, but the stack can not put it in NDISC link-layer address
     /// options, so neighbor discovery does not work with one.
     ///
-    /// # Panics
-    /// Panics if the address is not of the kind the device's medium uses.
-    pub fn set_hardware_addr(&mut self, addr: HardwareAddress) {
-        let medium = self.state().medium();
-        assert_eq!(
-            addr.medium(),
-            medium,
-            "hardware address does not match the interface's medium"
-        );
+    /// Errors:
+    /// - `MediumMismatch` if the address is not of the kind the interface's
+    ///   medium uses. The interface is left unchanged.
+    pub fn set_hardware_addr(&mut self, addr: HardwareAddress) -> core::result::Result<(), MediumMismatch> {
+        if addr.medium() != self.state().medium() {
+            return Err(MediumMismatch);
+        }
         self.state_mut().hardware_addr = addr;
         #[cfg(all(any(feature = "medium-ethernet", feature = "medium-ieee802154"), feature = "ipv6"))]
         {
@@ -290,6 +366,7 @@ impl<'d> Iface<'_, 'd> {
                 self.invalidate();
             }
         }
+        Ok(())
     }
 
     /// The IP addresses assigned to the interface, with their origin.
@@ -310,18 +387,15 @@ impl<'d> Iface<'_, 'd> {
     /// destination's subnet, so ordering only matters between addresses of the same
     /// subnet.
     ///
-    /// # Panics
-    /// Panics if the address is not unicast.
-    ///
     /// Errors:
+    /// - `NotUnicast` if the address is not unicast.
     /// - `Full` if the interface has no room for another address. Only possible
     ///   without the `alloc` feature, where the limit is
     ///   [`IFACE_ADDR_COUNT`].
-    pub fn add_ip_addr(&mut self, cidr: IpCidr) -> core::result::Result<Option<IpCidr>, Full> {
-        assert!(
-            cidr.address().is_unicast(),
-            "only unicast addresses can be assigned to an interface"
-        );
+    pub fn add_ip_addr(&mut self, cidr: IpCidr) -> core::result::Result<Option<IpCidr>, AddrError> {
+        if !cidr.address().is_unicast() {
+            return Err(AddrError::NotUnicast);
+        }
 
         let ip_addrs = &mut self.state_mut().ip_addrs;
         match ip_addrs.iter().position(|old| old.cidr.address() == cidr.address()) {
@@ -332,7 +406,7 @@ impl<'d> Iface<'_, 'd> {
                 Ok(Some(old.cidr))
             }
             None => {
-                ip_addrs.push(IfaceAddr::manual(cidr)).map_err(|_| Full)?;
+                ip_addrs.push(IfaceAddr::manual(cidr)).map_err(|_| AddrError::Full)?;
                 self.state_mut().config_changed();
                 Ok(None)
             }
@@ -355,25 +429,25 @@ impl<'d> Iface<'_, 'd> {
     /// Equivalent to removing every address and adding the given ones. The
     /// automatic IPv6 link-local address is kept.
     ///
-    /// # Panics
-    /// Panics if any of the addresses is not unicast.
+    /// On error the interface is left unchanged.
     ///
     /// Errors:
+    /// - `NotUnicast` if any of the addresses is not unicast.
     /// - `Full` if the addresses do not fit. Only possible without the `alloc`
     ///   feature, where the limit is [`IFACE_ADDR_COUNT`].
-    ///   The interface is left unchanged.
-    pub fn set_ip_addrs(&mut self, new_addrs: impl IntoIterator<Item = IpCidr>) -> core::result::Result<(), Full> {
+    pub fn set_ip_addrs(&mut self, new_addrs: impl IntoIterator<Item = IpCidr>) -> core::result::Result<(), AddrError> {
         #[allow(unused_mut)]
         let mut addrs: Vec<IfaceAddr, IFACE_ADDR_COUNT> = Vec::new();
-        addrs.try_extend(new_addrs.into_iter().map(IfaceAddr::manual))?;
-        assert!(
-            addrs.iter().all(|a| a.cidr.address().is_unicast()),
-            "only unicast addresses can be assigned to an interface"
-        );
+        for cidr in new_addrs {
+            if !cidr.address().is_unicast() {
+                return Err(AddrError::NotUnicast);
+            }
+            addrs.push(IfaceAddr::manual(cidr)).map_err(|_| AddrError::Full)?;
+        }
         #[cfg(all(any(feature = "medium-ethernet", feature = "medium-ieee802154"), feature = "ipv6"))]
         for a in self.state().ip_addrs.iter() {
             if a.origin == AddrOrigin::LinkLocal && !addrs.iter().any(|n| n.cidr.address() == a.cidr.address()) {
-                addrs.push(*a).map_err(|_| Full)?;
+                addrs.push(*a).map_err(|_| AddrError::Full)?;
             }
         }
 
@@ -422,18 +496,18 @@ impl<'d> Iface<'_, 'd> {
     /// turned off. Turning it on when it is already on restarts it with the new
     /// configuration.
     ///
-    /// # Panics
-    /// Panics if the interface is not an Ethernet interface.
+    /// Errors:
+    /// - `MediumMismatch` if the interface is not an Ethernet interface.
     #[cfg(feature = "dhcpv4")]
-    pub fn set_dhcpv4(&mut self, config: Option<self::dhcpv4::DhcpConfig>) {
-        assert!(
-            matches!(self.state().hardware_addr, HardwareAddress::Ethernet(_)),
-            "the DHCPv4 client needs an Ethernet interface"
-        );
+    pub fn set_dhcpv4(&mut self, config: Option<self::dhcpv4::DhcpConfig>) -> core::result::Result<(), MediumMismatch> {
+        if !matches!(self.state().hardware_addr, HardwareAddress::Ethernet(_)) {
+            return Err(MediumMismatch);
+        }
         let Iface { inner, ifaces, index } = self;
         let iface = ifaces.get_mut(*index);
         iface.dhcpv4_reset(inner);
         iface.dhcpv4 = config.map(self::dhcpv4::Client::new);
+        Ok(())
     }
 
     /// Turn IPv6 stateless address autoconfiguration on, with the given
@@ -446,18 +520,19 @@ impl<'d> Iface<'_, 'd> {
     /// lifetime runs out or when SLAAC is turned off. Turning it on when it is
     /// already on restarts it.
     ///
-    /// # Panics
-    /// Panics if the interface is not an Ethernet or IEEE 802.15.4 interface.
+    /// Errors:
+    /// - `MediumMismatch` if the interface is not an Ethernet or IEEE 802.15.4
+    ///   interface.
     #[cfg(feature = "slaac")]
-    pub fn set_slaac(&mut self, config: Option<self::slaac::SlaacConfig>) {
-        assert!(
-            self.state().has_link_layer(),
-            "SLAAC needs an Ethernet or IEEE 802.15.4 interface"
-        );
+    pub fn set_slaac(&mut self, config: Option<self::slaac::SlaacConfig>) -> core::result::Result<(), MediumMismatch> {
+        if !self.state().has_link_layer() {
+            return Err(MediumMismatch);
+        }
         let Iface { inner, ifaces, index } = self;
         let iface = ifaces.get_mut(*index);
         iface.slaac_reset(inner);
         iface.slaac = config.map(self::slaac::Slaac::new);
+        Ok(())
     }
 
     /// Solicit routers again, keeping the addresses and routes already configured.
@@ -504,22 +579,28 @@ impl<'d> Iface<'_, 'd> {
     /// Turning the server off, or on again with a new configuration, drops all
     /// leases.
     ///
-    /// # Panics
-    /// Panics if the interface is not an Ethernet interface, or if the pool is
-    /// backwards (`pool_start` above `pool_end`).
+    /// On error the server is left as it was.
+    ///
+    /// Errors:
+    /// - `MediumMismatch` if the interface is not an Ethernet interface.
+    /// - `InvalidPool` if `pool_end` is below `pool_start`.
     #[cfg(feature = "dhcpv4-server")]
-    pub fn set_dhcpv4_server(&mut self, config: Option<self::dhcpv4_server::DhcpServerConfig>) {
-        assert!(
-            matches!(self.state().hardware_addr, HardwareAddress::Ethernet(_)),
-            "the DHCPv4 server needs an Ethernet interface"
-        );
-        if let Some(config) = &config {
-            assert!(
-                config.pool_start.to_bits() <= config.pool_end.to_bits(),
-                "the DHCP pool ends before it starts"
-            );
+    pub fn set_dhcpv4_server(
+        &mut self,
+        config: Option<self::dhcpv4_server::DhcpServerConfig>,
+    ) -> core::result::Result<(), self::dhcpv4_server::DhcpServerError> {
+        use self::dhcpv4_server::DhcpServerError;
+
+        if !matches!(self.state().hardware_addr, HardwareAddress::Ethernet(_)) {
+            return Err(DhcpServerError::MediumMismatch);
+        }
+        if let Some(config) = &config
+            && config.pool_start.to_bits() > config.pool_end.to_bits()
+        {
+            return Err(DhcpServerError::InvalidPool);
         }
         self.state_mut().dhcpv4_server = config.map(self::dhcpv4_server::Server::new);
+        Ok(())
     }
 
     /// The DHCP server's lease table. Empty if the server is off.

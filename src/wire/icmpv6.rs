@@ -1,6 +1,7 @@
 use byteorder::{ByteOrder, NetworkEndian};
 
-use super::{Error, Result};
+use super::Result;
+use crate::error::Malformed;
 use crate::wire::ip::checksum;
 use crate::wire::{IpProtocol, Ipv6Address};
 
@@ -201,12 +202,12 @@ impl<'a> Packet<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Error)` if the buffer is too short.
+    /// Returns `Err(Malformed)` if the buffer is too short.
     pub fn check_len(&self) -> Result<()> {
         let len = self.buffer.len();
 
         if len < 4 {
-            return Err(Error);
+            return Err(Malformed);
         }
 
         match self.msg_type() {
@@ -224,11 +225,11 @@ impl<'a> Packet<'a> {
             | Message::Redirect
             | Message::MldReport => {
                 if len < field::HEADER_END || len < self.header_len() {
-                    return Err(Error);
+                    return Err(Malformed);
                 }
             }
-            Message::RplControl => return Err(Error),
-            _ => return Err(Error),
+            Message::RplControl => return Err(Malformed),
+            _ => return Err(Malformed),
         }
 
         Ok(())

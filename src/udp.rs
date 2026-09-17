@@ -27,7 +27,8 @@ use core::ops::{Deref, Range};
 use crate::driver::PacketBuf;
 use crate::driver::PacketMeta;
 #[cfg(feature = "icmp-errors")]
-use crate::icmp_error::IcmpError;
+use crate::error::IcmpError;
+use crate::error::InvalidHopLimit;
 use crate::iface::IfaceHandle;
 use crate::stack::{IfaceBinding, Stack, TxContext, addr_score, alloc_ephemeral_port};
 use crate::storage::Slab;
@@ -427,14 +428,19 @@ impl UdpSocket<'_, '_> {
     /// A socket without an explicitly set hop limit value uses the default [IANA
     /// recommended] value (64).
     ///
-    /// # Panics
-    /// This function panics if a hop limit value of 0 is given. See [RFC 1122 § 3.2.1.7].
+    /// Errors:
+    /// - `InvalidHopLimit` if the hop limit is `Some(0)`. A host must not send a
+    ///   packet with a hop limit of zero ([RFC 1122 § 3.2.1.7]). The socket is
+    ///   left unchanged.
     ///
     /// [IANA recommended]: https://www.iana.org/assignments/ip-parameters/ip-parameters.xhtml
     /// [RFC 1122 § 3.2.1.7]: https://tools.ietf.org/html/rfc1122#section-3.2.1.7
-    pub fn set_hop_limit(&mut self, hop_limit: Option<u8>) {
-        assert!(hop_limit != Some(0));
-        self.inner_mut().hop_limit = hop_limit
+    pub fn set_hop_limit(&mut self, hop_limit: Option<u8>) -> Result<(), InvalidHopLimit> {
+        if hop_limit == Some(0) {
+            return Err(InvalidHopLimit);
+        }
+        self.inner_mut().hop_limit = hop_limit;
+        Ok(())
     }
 
     /// Bind the socket to an interface, or unbind it with `None`.
@@ -1587,7 +1593,7 @@ mod test {
         for _ in 0..UDP_SOCKET_COUNT {
             handles.push(stack.add_udp_socket().unwrap());
         }
-        assert_eq!(stack.add_udp_socket(), Err(crate::Full));
+        assert_eq!(stack.add_udp_socket(), Err(crate::error::Full));
         // Removing one makes room again, and its slot is reused.
         stack.remove_udp_socket(handles[1]);
         assert_eq!(stack.add_udp_socket(), Ok(handles[1]));
@@ -1850,5 +1856,22 @@ mod test {
             stack.udp_socket(handle).bind(0, (REMOTE_ADDR, REMOTE_PORT)),
             Err(BindError::Unaddressable)
         );
+    }
+
+    #[test]
+    fn test_set_hop_limit() {
+        let (mut stack, handle) = stack_with_socket();
+        let mut socket = stack.udp_socket(handle);
+        assert_eq!(socket.hop_limit(), None);
+
+        socket.set_hop_limit(Some(0x2a)).unwrap();
+        assert_eq!(socket.hop_limit(), Some(0x2a));
+
+        // Zero is rejected and the previous value stays.
+        assert_eq!(socket.set_hop_limit(Some(0)), Err(InvalidHopLimit));
+        assert_eq!(socket.hop_limit(), Some(0x2a));
+
+        socket.set_hop_limit(None).unwrap();
+        assert_eq!(socket.hop_limit(), None);
     }
 }

@@ -10,13 +10,17 @@ use crate::config::TCP_SOCKET_COUNT;
 #[cfg(feature = "udp")]
 use crate::config::UDP_SOCKET_COUNT;
 use crate::driver::{ChecksumCapabilities, Driver, PacketBuf};
+#[cfg(any(feature = "udp", feature = "_raw", feature = "tcp"))]
+use crate::error::Full;
+#[cfg(all(feature = "icmp-errors", any(feature = "udp", feature = "tcp")))]
+use crate::error::IcmpError;
 #[cfg(any(feature = "ipv4-fragmentation", feature = "sixlowpan-fragmentation"))]
 use crate::fragmentation::Fragmenter;
 #[cfg(all(feature = "icmp-errors", any(feature = "udp", feature = "tcp")))]
-use crate::icmp_error::{IcmpError, parse_quoted_packet};
+use crate::icmp_error::parse_quoted_packet;
 #[cfg(all(any(feature = "medium-ethernet", feature = "medium-ieee802154"), feature = "ipv6"))]
 use crate::iface::link_local_addr;
-use crate::iface::{Iface, IfaceHandle, IfaceIter, IfaceState, Medium};
+use crate::iface::{AddIfaceError, Iface, IfaceHandle, IfaceIter, IfaceState, Medium};
 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
 use crate::neighbor::{Answer as NeighborAnswer, Key as NeighborKey, NeighborCache, PendingQueue, ProbeEvent};
 use crate::rand::Rand;
@@ -25,7 +29,7 @@ use crate::raw::{RawHandle, RawSocket, RawSocketIter, RawSocketState};
 #[cfg(any(feature = "ipv4-reassembly", feature = "sixlowpan-reassembly"))]
 use crate::reassembly::FragmentsBuffer;
 use crate::route::Routes;
-use crate::storage::{Full, MaybeBox, Slab, Vec};
+use crate::storage::{MaybeBox, Slab, Vec};
 #[cfg(feature = "tcp")]
 use crate::tcp::{SocketBuffer, TcpHandle, TcpRepr, TcpSocket, TcpSocketIter, TcpSocketState};
 #[cfg(feature = "tcp-listener")]
@@ -505,14 +509,18 @@ impl<'d> Stack<'d> {
     ///
     /// An empty string clears the hostname.
     ///
-    /// # Panics
-    /// Panics if `hostname` is longer than 63 bytes.
+    /// Errors:
+    /// - `HostnameTooLong` if `hostname` is longer than 63 bytes. The hostname
+    ///   is left unchanged.
     #[cfg(feature = "hostname")]
-    pub fn set_hostname(&mut self, hostname: &str) {
-        self.inner.hostname.clear();
-        if self.inner.hostname.push_str(hostname).is_err() {
-            panic!("hostname too long, max is {} bytes", HOSTNAME_MAX_LEN);
+    pub fn set_hostname(&mut self, hostname: &str) -> core::result::Result<(), crate::error::HostnameTooLong> {
+        if hostname.len() > HOSTNAME_MAX_LEN {
+            return Err(crate::error::HostnameTooLong);
         }
+        self.inner.hostname.clear();
+        // Can't fail: the length was just checked.
+        let _ = self.inner.hostname.push_str(hostname);
+        Ok(())
     }
 
     /// Add an interface to the stack, returning a handle to it.
@@ -534,16 +542,19 @@ impl<'d> Stack<'d> {
     /// # }
     /// ```
     ///
-    /// # Panics
-    /// Panics if the hardware address the device reports is not of the kind its
-    /// medium uses.
-    ///
     /// Errors:
     /// - `Full` if the stack has no room for another interface. Only possible
     ///   without the `alloc` feature, where the limit is
     ///   [`IFACE_COUNT`].
+    /// - `UnsupportedMedium` if the build has no `medium-*` feature for the
+    ///   device's medium.
+    /// - `HardwareAddrMismatch` if the hardware address the device reports is
+    ///   not of the kind its medium uses.
     #[cfg(feature = "alloc")]
-    pub fn add_iface(&mut self, driver: alloc::boxed::Box<dyn Driver + 'd>) -> core::result::Result<IfaceHandle, Full> {
+    pub fn add_iface(
+        &mut self,
+        driver: alloc::boxed::Box<dyn Driver + 'd>,
+    ) -> core::result::Result<IfaceHandle, AddIfaceError> {
         self.add_iface_inner(driver.into())
     }
 
@@ -554,29 +565,32 @@ impl<'d> Stack<'d> {
     /// removed, so the device must be declared before the stack, or be `'static`.
     /// Otherwise this is [`add_iface`](Self::add_iface).
     ///
-    /// # Panics
-    /// Panics if the hardware address the device reports is not of the kind its
-    /// medium uses.
-    ///
     /// Errors:
     /// - `Full` if the stack has no room for another interface. Only possible
     ///   without the `alloc` feature, where the limit is
     ///   [`IFACE_COUNT`].
-    pub fn add_iface_borrowed(&mut self, driver: &'d mut dyn Driver) -> core::result::Result<IfaceHandle, Full> {
+    /// - `UnsupportedMedium` if the build has no `medium-*` feature for the
+    ///   device's medium.
+    /// - `HardwareAddrMismatch` if the hardware address the device reports is
+    ///   not of the kind its medium uses.
+    pub fn add_iface_borrowed(
+        &mut self,
+        driver: &'d mut dyn Driver,
+    ) -> core::result::Result<IfaceHandle, AddIfaceError> {
         self.add_iface_inner(driver.into())
     }
 
-    fn add_iface_inner(&mut self, driver: MaybeBox<'d, dyn Driver + 'd>) -> core::result::Result<IfaceHandle, Full> {
+    fn add_iface_inner(
+        &mut self,
+        driver: MaybeBox<'d, dyn Driver + 'd>,
+    ) -> core::result::Result<IfaceHandle, AddIfaceError> {
         let caps = driver.capabilities();
-        let medium = Medium::from_driver(caps.medium)
-            .expect("the driver's medium is not supported by this build: enable the matching medium-* cargo feature");
+        let medium = Medium::from_driver(caps.medium).ok_or(AddIfaceError::UnsupportedMedium)?;
+        // The medium is supported, so an address kind the build does not have is
+        // one of another medium: a mismatch either way.
         let hardware_addr = HardwareAddress::from_driver(driver.hardware_address())
-            .expect("the driver's hardware address kind is not supported by this build: enable the matching medium-* cargo feature");
-        assert_eq!(
-            hardware_addr.medium(),
-            medium,
-            "the device's hardware address does not match its medium"
-        );
+            .filter(|addr| addr.medium() == medium)
+            .ok_or(AddIfaceError::HardwareAddrMismatch)?;
         #[cfg(feature = "medium-ieee802154")]
         let sixlowpan = crate::sixlowpan::State::new(&mut self.inner.rand);
         #[allow(unused_mut)]
@@ -2817,7 +2831,7 @@ fn ndisc_lladdr_option(
         let opt_len = opt.data_len() as usize * 8;
         if opt_len == 0 {
             trace!("ndisc: option with zero length");
-            return Err(crate::wire::Error);
+            return Err(crate::error::Malformed);
         }
         if opt.option_type() == option_type {
             lladdr = Some(opt.link_layer_addr());
@@ -2971,7 +2985,8 @@ pub(crate) mod test {
         let generation = stack.iface(handle).config_generation();
         stack
             .iface(handle)
-            .set_hardware_addr(HardwareAddress::Ethernet(EthernetAddress([0x02, 0, 0, 0, 0, 0x02])));
+            .set_hardware_addr(HardwareAddress::Ethernet(EthernetAddress([0x02, 0, 0, 0, 0, 0x02])))
+            .unwrap();
         assert!(!stack.iface(handle).has_ip_addr(OUR_LINK_LOCAL));
         assert!(
             stack
@@ -3077,7 +3092,7 @@ pub(crate) mod test {
         let prefix = Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0);
         let our_addr = IpCidr::new(Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0xff, 0xfe00, 0x1).into(), 64);
 
-        stack.iface(iface).set_slaac(Some(SlaacConfig::default()));
+        stack.iface(iface).set_slaac(Some(SlaacConfig::default())).unwrap();
         assert_eq!(stack.iface(iface).slaac(), Some(&SlaacState::default()));
         let generation = stack.iface(iface).config_generation();
 
@@ -3222,7 +3237,7 @@ pub(crate) mod test {
         ));
         stack.poll(now + Duration::from_secs(2));
         assert!(stack.iface(iface).has_ip_addr(our_addr.address()));
-        stack.iface(iface).set_slaac(None);
+        stack.iface(iface).set_slaac(None).unwrap();
         assert!(stack.iface(iface).slaac().is_none());
         assert!(!stack.iface(iface).has_ip_addr(our_addr.address()));
         assert!(stack.routes().get_default_ipv6_route().is_none());
@@ -3251,7 +3266,7 @@ pub(crate) mod test {
         stack.iface(iface).set_ip_addrs(no_addrs).unwrap();
 
         stack.iface(iface).add_ip_addr(our_addr).unwrap();
-        stack.iface(iface).set_slaac(Some(SlaacConfig::default()));
+        stack.iface(iface).set_slaac(Some(SlaacConfig::default())).unwrap();
 
         let now = Instant::from_secs(6);
         rx.borrow_mut().push_back(router_advert(
@@ -3337,7 +3352,7 @@ pub(crate) mod test {
         let no_addrs: [IpCidr; 0] = [];
         stack.iface(iface).set_ip_addrs(no_addrs).unwrap();
 
-        stack.iface(iface).set_slaac(Some(SlaacConfig::default()));
+        stack.iface(iface).set_slaac(Some(SlaacConfig::default())).unwrap();
 
         // Both prefixes are live, and the one the network is leaving is preferred.
         let now = Instant::from_secs(6);
@@ -3404,7 +3419,7 @@ pub(crate) mod test {
 
         let no_addrs: [IpCidr; 0] = [];
         stack.iface(iface).set_ip_addrs(no_addrs).unwrap();
-        stack.iface(iface).set_slaac(Some(SlaacConfig::default()));
+        stack.iface(iface).set_slaac(Some(SlaacConfig::default())).unwrap();
 
         // Both prefixes are live.
         let now = Instant::from_secs(6);
@@ -3493,7 +3508,7 @@ pub(crate) mod test {
         let router_ll = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0xff, 0xfe00, 0x2);
         let prefix = Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0);
 
-        stack.iface(iface).set_slaac(Some(SlaacConfig::default()));
+        stack.iface(iface).set_slaac(Some(SlaacConfig::default())).unwrap();
         stack.poll(Instant::from_secs(1));
 
         // A router answers, so solicitation stops.
@@ -3532,7 +3547,7 @@ pub(crate) mod test {
         let iface = IfaceHandle::new(0);
 
         link.set(crate::driver::LinkState::Down);
-        stack.iface(iface).set_slaac(Some(SlaacConfig::default()));
+        stack.iface(iface).set_slaac(Some(SlaacConfig::default())).unwrap();
         for at in [1, 5, 9, 13] {
             stack.poll(Instant::from_secs(at));
         }
@@ -3565,7 +3580,7 @@ pub(crate) mod test {
         let router_ll = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0xff, 0xfe00, 0x2);
         let prefix = Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0);
 
-        stack.iface(iface).set_slaac(Some(SlaacConfig::default()));
+        stack.iface(iface).set_slaac(Some(SlaacConfig::default())).unwrap();
         stack.poll(Instant::from_secs(1));
         rx.borrow_mut().push_back(router_advert(
             router_hw,
@@ -3607,7 +3622,7 @@ pub(crate) mod test {
         let prefix = Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0);
         let our_addr = IpCidr::new(Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0xff, 0xfe00, 0x1).into(), 64);
 
-        stack.iface(iface).set_slaac(Some(SlaacConfig::default()));
+        stack.iface(iface).set_slaac(Some(SlaacConfig::default())).unwrap();
         rx.borrow_mut().push_back(router_advert(
             router_hw,
             router_ll,
@@ -3645,7 +3660,7 @@ pub(crate) mod test {
         let prefix = Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0);
         let our_addr = IpCidr::new(Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0xff, 0xfe00, 0x1).into(), 64);
 
-        stack.iface(iface).set_slaac(Some(SlaacConfig::default()));
+        stack.iface(iface).set_slaac(Some(SlaacConfig::default())).unwrap();
         // Solicit first: an advertisement only settles the state machine from
         // `Discovering`, so it has to have asked before the answer arrives.
         stack.poll(Instant::from_secs(1));
@@ -3699,7 +3714,7 @@ pub(crate) mod test {
         let (mut stack, _rx, tx, link) = test_stack_with_link(Medium::Ethernet);
         let iface = IfaceHandle::new(0);
 
-        stack.iface(iface).set_slaac(Some(SlaacConfig::default()));
+        stack.iface(iface).set_slaac(Some(SlaacConfig::default())).unwrap();
         // Nothing answers. The three solicitations RFC 4861 allows go out 4s apart, and then
         // the budget is spent: the interface is left in `Discovering` with nothing to send.
         for at in [1, 5, 9, 13, 20] {
@@ -3723,7 +3738,7 @@ pub(crate) mod test {
     fn test_slaac_ignores_invalid_advert() {
         let (mut stack, rx, _tx) = test_stack(Medium::Ethernet);
         let iface = IfaceHandle::new(0);
-        stack.iface(iface).set_slaac(Some(SlaacConfig::default()));
+        stack.iface(iface).set_slaac(Some(SlaacConfig::default())).unwrap();
         rx.borrow_mut().push_back(router_advert(
             EthernetAddress([0x02, 0, 0, 0, 0, 0x02]),
             Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xbad),
@@ -4701,13 +4716,152 @@ pub(crate) mod test {
     }
 
     #[test]
-    #[should_panic]
     fn test_iface_reject_non_unicast_ip_addr() {
+        use crate::iface::AddrError;
+
         let (mut stack, _rx, _tx) = test_stack(Medium::Ip);
-        stack
-            .iface(IfaceHandle::new(0))
-            .add_ip_addr(IpCidr::new(Ipv4Address::new(224, 0, 0, 1).into(), 24))
-            .unwrap();
+        let before = stack.iface(IfaceHandle::new(0)).ip_addrs().to_vec();
+        let generation = stack.iface(IfaceHandle::new(0)).config_generation();
+
+        // Multicast, broadcast and unspecified addresses are all rejected, by both
+        // methods, and nothing changes.
+        for addr in [
+            Ipv4Address::new(224, 0, 0, 1),
+            Ipv4Address::new(255, 255, 255, 255),
+            Ipv4Address::new(0, 0, 0, 0),
+        ] {
+            assert_eq!(
+                stack
+                    .iface(IfaceHandle::new(0))
+                    .add_ip_addr(IpCidr::new(addr.into(), 24)),
+                Err(AddrError::NotUnicast)
+            );
+            assert_eq!(
+                stack
+                    .iface(IfaceHandle::new(0))
+                    .set_ip_addrs([IpCidr::new(OUR_V4.into(), 24), IpCidr::new(addr.into(), 24)]),
+                Err(AddrError::NotUnicast)
+            );
+        }
+        assert_eq!(stack.iface(IfaceHandle::new(0)).ip_addrs(), &before[..]);
+        assert_eq!(stack.iface(IfaceHandle::new(0)).config_generation(), generation);
+    }
+
+    #[test]
+    #[cfg(not(feature = "alloc"))]
+    fn test_iface_addr_table_full() {
+        use crate::iface::AddrError;
+
+        let (mut stack, _rx, _tx) = test_stack(Medium::Ip);
+        let mut iface = stack.iface(IfaceHandle::new(0));
+        let addr = |i: u8| IpCidr::new(Ipv4Address::new(10, 0, 0, i).into(), 24);
+
+        // The table already holds OUR_V4 (and, depending on features, more).
+        let free = crate::config::IFACE_ADDR_COUNT - iface.ip_addrs().len();
+        for i in 0..free {
+            assert_eq!(iface.add_ip_addr(addr(i as u8 + 1)), Ok(None));
+        }
+        assert_eq!(iface.add_ip_addr(addr(200)), Err(AddrError::Full));
+
+        // Updating the prefix of an assigned address needs no room.
+        assert_eq!(
+            iface.add_ip_addr(IpCidr::new(Ipv4Address::new(10, 0, 0, 1).into(), 16)),
+            Ok(Some(addr(1)))
+        );
+
+        // set_ip_addrs with too many addresses is rejected whole.
+        let before = iface.ip_addrs().to_vec();
+        let too_many = (0..crate::config::IFACE_ADDR_COUNT as u8 + 1).map(|i| addr(i + 1));
+        assert_eq!(iface.set_ip_addrs(too_many), Err(AddrError::Full));
+        assert_eq!(iface.ip_addrs(), &before[..]);
+    }
+
+    #[test]
+    #[cfg(all(feature = "medium-ethernet", feature = "medium-ip"))]
+    fn test_iface_set_hardware_addr_wrong_medium() {
+        use crate::iface::MediumMismatch;
+
+        let (mut stack, _rx, _tx) = test_stack(Medium::Ethernet);
+        let handle = IfaceHandle::new(0);
+        let before = stack.iface(handle).hardware_addr();
+        assert_eq!(
+            stack.iface(handle).set_hardware_addr(HardwareAddress::Ip),
+            Err(MediumMismatch)
+        );
+        assert_eq!(stack.iface(handle).hardware_addr(), before);
+
+        let (mut stack, _rx, _tx) = test_stack(Medium::Ip);
+        assert_eq!(
+            stack
+                .iface(handle)
+                .set_hardware_addr(HardwareAddress::Ethernet(EthernetAddress([0x02, 0, 0, 0, 0, 0x02]))),
+            Err(MediumMismatch)
+        );
+        assert_eq!(stack.iface(handle).hardware_addr(), HardwareAddress::Ip);
+    }
+
+    #[test]
+    #[cfg(all(feature = "medium-ethernet", feature = "medium-ip"))]
+    fn test_add_iface_hardware_addr_mismatch() {
+        use crate::iface::AddIfaceError;
+
+        // An Ethernet device reporting no hardware address at all.
+        let mut stack = Stack::new(1);
+        let mut driver = TestDevice::new(Medium::Ethernet);
+        driver.hardware_addr = HardwareAddress::Ip;
+        let driver = Box::leak(Box::new(driver));
+        assert_eq!(
+            stack.add_iface_borrowed(driver),
+            Err(AddIfaceError::HardwareAddrMismatch)
+        );
+        assert!(stack.ifaces().next().is_none());
+    }
+
+    #[test]
+    #[cfg(not(feature = "alloc"))]
+    fn test_add_iface_full() {
+        use crate::iface::AddIfaceError;
+
+        let mut stack = Stack::new(1);
+        for _ in 0..crate::config::IFACE_COUNT {
+            let driver = Box::leak(Box::new(TestDevice::new(Medium::Ip)));
+            stack.add_iface_borrowed(driver).unwrap();
+        }
+        let driver = Box::leak(Box::new(TestDevice::new(Medium::Ip)));
+        assert_eq!(stack.add_iface_borrowed(driver), Err(AddIfaceError::Full));
+    }
+
+    #[test]
+    #[cfg(feature = "hostname")]
+    fn test_set_hostname_too_long() {
+        let mut stack = Stack::new(1);
+        stack.set_hostname("xarxa").unwrap();
+        let long = "x".repeat(64);
+        assert_eq!(stack.set_hostname(&long), Err(crate::error::HostnameTooLong));
+        // Rejected, so the previous hostname stays.
+        assert_eq!(stack.hostname(), Some("xarxa"));
+        let max = "x".repeat(63);
+        stack.set_hostname(&max).unwrap();
+        assert_eq!(stack.hostname(), Some(&max[..]));
+    }
+
+    /// SLAAC needs a link layer: turning it on elsewhere is an error, not a
+    /// panic, and nothing is turned on.
+    #[test]
+    #[cfg(all(feature = "slaac", feature = "medium-ip"))]
+    fn test_set_slaac_wrong_medium() {
+        use crate::iface::MediumMismatch;
+
+        let (mut stack, _rx, tx) = test_stack(Medium::Ip);
+        let iface = IfaceHandle::new(0);
+        assert_eq!(
+            stack.iface(iface).set_slaac(Some(SlaacConfig::default())),
+            Err(MediumMismatch)
+        );
+        assert_eq!(stack.iface(iface).slaac(), None);
+        // No router solicitation goes out.
+        stack.poll(Instant::from_millis(0));
+        assert!(tx.borrow().is_empty());
     }
 
     /// An ARP request for [`OUR_V4`] from `remote_hw`/`remote_ip`, as an Ethernet
