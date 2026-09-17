@@ -10,10 +10,10 @@ use crate::config::TCP_SOCKET_COUNT;
 #[cfg(feature = "udp")]
 use crate::config::UDP_SOCKET_COUNT;
 use crate::driver::{ChecksumCapabilities, Driver, PacketBuf};
-#[cfg(all(feature = "icmp-errors", any(feature = "udp", feature = "tcp")))]
-use crate::error::IcmpError;
 #[cfg(any(feature = "udp", feature = "_raw", feature = "tcp"))]
 use crate::error::Full;
+#[cfg(all(feature = "icmp-errors", any(feature = "udp", feature = "tcp")))]
+use crate::error::IcmpError;
 #[cfg(feature = "ipv6")]
 use crate::error::Malformed;
 #[cfg(any(feature = "ipv4-fragmentation", feature = "sixlowpan-fragmentation"))]
@@ -3831,7 +3831,7 @@ pub(crate) mod test {
         assert_eq!(tx.len(), 1);
         let (msg_type, msg_code, quote) = parse_icmpv4_reply(&tx[0], OUR_V4, REMOTE_V4);
         assert_eq!(msg_type, Icmpv4Message::DstUnreachable);
-        assert_eq!(msg_code, Icmpv4DstUnreachable::ProtoUnreachable.into());
+        assert_eq!(msg_code, Icmpv4DstUnreachable::ProtoUnreachable.0);
         assert_eq!(quote, packet);
     }
 
@@ -3875,7 +3875,7 @@ pub(crate) mod test {
         assert_eq!(tx.len(), 1);
         let (msg_type, msg_code, quote) = parse_icmpv4_reply(&tx[0], OUR_V4, REMOTE_V4_B);
         assert_eq!(msg_type, Icmpv4Message::DstUnreachable);
-        assert_eq!(msg_code, Icmpv4DstUnreachable::ProtoUnreachable.into());
+        assert_eq!(msg_code, Icmpv4DstUnreachable::ProtoUnreachable.0);
         assert_eq!(quote, packet);
     }
 
@@ -3979,7 +3979,7 @@ pub(crate) mod test {
             assert_eq!(tx.len(), 1);
             let (msg_type, msg_code, quote) = parse_icmpv4_reply(&tx[0], OUR_V4, REMOTE_V4);
             assert_eq!(msg_type, Icmpv4Message::DstUnreachable);
-            assert_eq!(msg_code, Icmpv4DstUnreachable::PortUnreachable.into());
+            assert_eq!(msg_code, Icmpv4DstUnreachable::PortUnreachable.0);
             assert_eq!(quote, packet);
         }
 
@@ -4022,7 +4022,7 @@ pub(crate) mod test {
         assert_eq!(tx.len(), 1);
         let (msg_type, msg_code, pointer, quote) = parse_icmpv6_reply(&tx[0], OUR_V6, REMOTE_V6);
         assert_eq!(msg_type, Icmpv6Message::ParamProblem);
-        assert_eq!(msg_code, Icmpv6ParamProblem::UnrecognizedNxtHdr.into());
+        assert_eq!(msg_code, Icmpv6ParamProblem::UnrecognizedNxtHdr.0);
         // The pointer names the fixed header's next header field.
         assert_eq!(pointer, 6);
         assert_eq!(quote, packet);
@@ -4048,7 +4048,7 @@ pub(crate) mod test {
         assert_eq!(tx.len(), 1);
         let (msg_type, msg_code, _, quote) = parse_icmpv6_reply(&tx[0], OUR_V6, REMOTE_V6);
         assert_eq!(msg_type, Icmpv6Message::DstUnreachable);
-        assert_eq!(msg_code, Icmpv6DstUnreachable::PortUnreachable.into());
+        assert_eq!(msg_code, Icmpv6DstUnreachable::PortUnreachable.0);
         assert_eq!(quote, packet);
     }
 
@@ -4116,7 +4116,7 @@ pub(crate) mod test {
             assert_eq!(tx.len(), 1);
             let (msg_type, msg_code, pointer, quote) = parse_icmpv6_reply(&tx[0], OUR_V6, REMOTE_V6);
             assert_eq!(msg_type, Icmpv6Message::ParamProblem);
-            assert_eq!(msg_code, Icmpv6ParamProblem::UnrecognizedOption.into());
+            assert_eq!(msg_code, Icmpv6ParamProblem::UnrecognizedOption.0);
             assert_eq!(pointer, 42);
             assert_eq!(quote, packet);
         }
@@ -4152,7 +4152,7 @@ pub(crate) mod test {
         assert_eq!(tx.len(), 1);
         let (msg_type, msg_code, _, quote) = parse_icmpv6_reply(&tx[0], OUR_V6, REMOTE_V6);
         assert_eq!(msg_type, Icmpv6Message::ParamProblem);
-        assert_eq!(msg_code, Icmpv6ParamProblem::UnrecognizedOption.into());
+        assert_eq!(msg_code, Icmpv6ParamProblem::UnrecognizedOption.0);
         assert_eq!(quote, packet);
     }
 
@@ -4211,7 +4211,7 @@ pub(crate) mod test {
         let error = stack.raw_socket(raw_handle).recv().unwrap();
         let (msg_type, msg_code, quote) = parse_icmpv4_reply(&error, OUR_V4, OUR_V4);
         assert_eq!(msg_type, Icmpv4Message::DstUnreachable);
-        assert_eq!(msg_code, Icmpv4DstUnreachable::HostUnreachable.into());
+        assert_eq!(msg_code, Icmpv4DstUnreachable::HostUnreachable.0);
 
         let mut quoted = quote.clone();
         let ip = Ipv4Packet::new_checked(&mut quoted[..]).unwrap();

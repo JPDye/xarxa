@@ -67,6 +67,8 @@ mod mld;
 mod ndisc;
 #[cfg(all(any(feature = "medium-ethernet", feature = "medium-ieee802154"), feature = "ipv6"))]
 mod ndiscoption;
+#[cfg(feature = "serde")]
+mod serde_impls;
 #[cfg(feature = "medium-ieee802154")]
 pub(crate) mod sixlowpan;
 #[cfg(feature = "tcp")]
