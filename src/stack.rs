@@ -3123,7 +3123,7 @@ pub(crate) mod test {
             origin: AddrOrigin::Slaac,
             preferred_until: Some(now + Duration::from_secs(3600)),
         }));
-        let route = stack.routes().get_default_ipv6_route().unwrap();
+        let route = stack.routes().default_ipv6_route().unwrap();
         assert_eq!(route.via_router, IpAddr::V6(router_ll));
         assert_eq!(route.iface, iface);
         assert_eq!(route.origin, RouteOrigin::Slaac);
@@ -3168,13 +3168,13 @@ pub(crate) mod test {
         ));
         let deadline = stack.poll(now);
         assert_eq!(deadline, now + Duration::from_secs(1800));
-        let route = stack.routes().get_default_ipv6_route().unwrap();
+        let route = stack.routes().default_ipv6_route().unwrap();
         assert_eq!(route.expires_at, Some(now + Duration::from_secs(1800)));
 
         // The route expires first, then the address.
         let generation = stack.iface(iface).config_generation();
         let deadline = stack.poll(now + Duration::from_secs(1801));
-        assert!(stack.routes().get_default_ipv6_route().is_none());
+        assert!(stack.routes().default_ipv6_route().is_none());
         assert!(stack.iface(iface).has_ip_addr(our_addr.address()));
         assert_ne!(stack.iface(iface).config_generation(), generation);
         assert_eq!(deadline, now + Duration::from_secs(7200));
@@ -3194,7 +3194,7 @@ pub(crate) mod test {
         ));
         stack.poll(now);
         assert!(stack.iface(iface).has_ip_addr(our_addr.address()));
-        assert!(stack.routes().get_default_ipv6_route().is_some());
+        assert!(stack.routes().default_ipv6_route().is_some());
         rx.borrow_mut().push_back(router_advert(
             router_hw,
             router_ll,
@@ -3205,7 +3205,7 @@ pub(crate) mod test {
         ));
         stack.poll(now + Duration::from_secs(1));
         assert!(!stack.iface(iface).has_ip_addr(our_addr.address()));
-        assert!(stack.routes().get_default_ipv6_route().is_none());
+        assert!(stack.routes().default_ipv6_route().is_none());
 
         // Turning SLAAC off removes what it installed, and nothing else.
         rx.borrow_mut().push_back(router_advert(
@@ -3221,7 +3221,7 @@ pub(crate) mod test {
         stack.iface(iface).set_slaac(None).unwrap();
         assert!(stack.iface(iface).slaac().is_none());
         assert!(!stack.iface(iface).has_ip_addr(our_addr.address()));
-        assert!(stack.routes().get_default_ipv6_route().is_none());
+        assert!(stack.routes().default_ipv6_route().is_none());
         assert!(stack.iface(iface).has_ip_addr(OUR_V6));
         assert!(stack.iface(iface).has_ip_addr(OUR_LINK_LOCAL));
     }
@@ -3614,7 +3614,7 @@ pub(crate) mod test {
         ));
         stack.poll(Instant::from_secs(6));
         assert!(stack.iface(iface).has_ip_addr(our_addr.address()));
-        assert!(stack.routes().get_default_ipv6_route().is_some());
+        assert!(stack.routes().default_ipv6_route().is_some());
 
         bounce_link(&mut stack, &tx, &link, 30);
 
@@ -3626,7 +3626,7 @@ pub(crate) mod test {
                 .any(|a| a.cidr == our_addr && a.origin == AddrOrigin::Slaac),
             "a link bounce must not discard an address whose lifetime is still running"
         );
-        let route = stack.routes().get_default_ipv6_route().unwrap();
+        let route = stack.routes().default_ipv6_route().unwrap();
         assert_eq!(route.origin, RouteOrigin::Slaac, "the default route must survive too");
     }
 
@@ -3672,7 +3672,7 @@ pub(crate) mod test {
         assert_eq!(msg_type, Icmpv6Message::RouterSolicit);
         // And it re-checks rather than discards, same as the link-up path.
         assert!(stack.iface(iface).has_ip_addr(our_addr.address()));
-        assert!(stack.routes().get_default_ipv6_route().is_some());
+        assert!(stack.routes().default_ipv6_route().is_some());
     }
 
     /// With SLAAC off there is nothing to restart, so the call is a no-op.
@@ -3730,7 +3730,7 @@ pub(crate) mod test {
         ));
         stack.poll(Instant::from_secs(1));
         assert!(!stack.iface(iface).slaac().unwrap().routers_seen);
-        assert!(stack.routes().get_default_ipv6_route().is_none());
+        assert!(stack.routes().default_ipv6_route().is_none());
     }
 
     /// Inject a packet into the device and poll the stack to process it.

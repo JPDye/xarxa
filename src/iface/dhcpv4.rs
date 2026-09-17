@@ -1108,7 +1108,7 @@ mod test {
                 preferred_until: None
             }]
         );
-        let route = stack.routes().get_default_ipv4_route().unwrap();
+        let route = stack.routes().default_ipv4_route().unwrap();
         assert_eq!(route.via_router, IpAddr::V4(SERVER_IP));
         assert_eq!(route.iface, IFACE);
         assert_eq!(route.origin, RouteOrigin::Dhcpv4);
@@ -1158,7 +1158,7 @@ mod test {
         stack.iface(IFACE).set_dhcpv4(None).unwrap();
         assert!(stack.iface(IFACE).dhcpv4_lease().is_none());
         assert!(ipv4_addrs(&mut stack).is_empty());
-        assert!(stack.routes().get_default_ipv4_route().is_none());
+        assert!(stack.routes().default_ipv4_route().is_none());
         assert_ne!(stack.iface(IFACE).config_generation(), generation);
     }
 
@@ -1274,7 +1274,7 @@ mod test {
         }
         assert!(stack.iface(IFACE).dhcpv4_lease().is_none());
         assert!(ipv4_addrs(&mut stack).is_empty());
-        assert!(stack.routes().get_default_ipv4_route().is_none());
+        assert!(stack.routes().default_ipv4_route().is_none());
         let mut sent = parse_sent(tx.borrow().last().unwrap());
         assert_eq!(message_type(&mut sent), DhcpMessageType::Discover);
         assert_eq!(sent.src_ip, Ipv4Addr::UNSPECIFIED);

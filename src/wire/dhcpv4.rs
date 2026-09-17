@@ -443,7 +443,7 @@ impl<'a> Packet<'a> {
     /// Return the `sname` (server name) field as a string.
     ///
     /// Errors if it is empty or not valid UTF-8.
-    pub fn get_sname(&self) -> Result<&str> {
+    pub fn sname(&self) -> Result<&str> {
         let data = &self.buffer[field::SNAME];
         let len = data.iter().position(|&x| x == 0).ok_or(Malformed)?;
         if len == 0 {
@@ -457,7 +457,7 @@ impl<'a> Packet<'a> {
     /// Return the `file` (boot file name) field as a string.
     ///
     /// Errors if it is empty or not valid UTF-8.
-    pub fn get_boot_file(&self) -> Result<&str> {
+    pub fn boot_file(&self) -> Result<&str> {
         let data = &self.buffer[field::FILE];
         let len = data.iter().position(|&x| x == 0).ok_or(Malformed)?;
         if len == 0 {

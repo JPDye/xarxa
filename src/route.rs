@@ -194,13 +194,13 @@ impl Routes {
 
     /// Returns the ipv4 default route if there is one in the route table.
     #[cfg(feature = "ipv4")]
-    pub fn get_default_ipv4_route(&self) -> Option<Route> {
+    pub fn default_ipv4_route(&self) -> Option<Route> {
         self.storage.iter().find(|r| r.is_ipv4_gateway()).copied()
     }
 
     /// Returns the ipv6 default route if there is one in the route table.
     #[cfg(feature = "ipv6")]
-    pub fn get_default_ipv6_route(&self) -> Option<Route> {
+    pub fn default_ipv6_route(&self) -> Option<Route> {
         self.storage.iter().find(|r| r.is_ipv6_gateway()).copied()
     }
 
@@ -407,18 +407,18 @@ mod test {
         let gw1 = Ipv4Addr::new(192, 168, 1, 1);
         let gw2 = Ipv4Addr::new(192, 168, 1, 2);
 
-        assert!(routes.get_default_ipv4_route().is_none());
+        assert!(routes.default_ipv4_route().is_none());
         assert!(routes.add_default_ipv4_route(gw1, IF_0).unwrap().is_none());
 
         // Adding a second default route replaces the first.
         let old = routes.add_default_ipv4_route(gw2, IF_1).unwrap().unwrap();
         assert_eq!(old.via_router, gw1.into());
-        let current = routes.get_default_ipv4_route().unwrap();
+        let current = routes.default_ipv4_route().unwrap();
         assert_eq!(current.via_router, gw2.into());
         assert_eq!(current.iface, IF_1);
 
         assert!(routes.remove_default_ipv4_route().is_some());
-        assert!(routes.get_default_ipv4_route().is_none());
+        assert!(routes.default_ipv4_route().is_none());
     }
 
     #[test]
