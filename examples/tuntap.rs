@@ -25,7 +25,7 @@ use std::os::unix::io::AsRawFd;
 use xarxa::Stack;
 use xarxa::driver_impls::{TunTapDriver, wait};
 use xarxa::time::Instant;
-use xarxa::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, IpListenEndpoint, Ipv4Address};
+use xarxa::wire::{EthernetAddress, HardwareAddress, IpAddr, IpCidr, Ipv4Addr, ListenSocketAddr};
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
@@ -47,22 +47,22 @@ fn main() {
     stack
         .iface(iface)
         .set_ip_addrs([
-            IpCidr::new(IpAddress::v4(192, 168, 69, 1), 24),
-            IpCidr::new(IpAddress::v6(0xfdaa, 0, 0, 0, 0, 0, 0, 1), 64),
-            IpCidr::new(IpAddress::v6(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64),
+            IpCidr::new(IpAddr::v4(192, 168, 69, 1), 24),
+            IpCidr::new(IpAddr::v6(0xfdaa, 0, 0, 0, 0, 0, 0, 1), 64),
+            IpCidr::new(IpAddr::v6(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64),
         ])
         .unwrap();
 
     // Off-link traffic routes to the host's address on this interface.
     stack
         .routes_mut()
-        .add_default_ipv4_route(Ipv4Address::new(192, 168, 69, 100), iface)
+        .add_default_ipv4_route(Ipv4Addr::new(192, 168, 69, 100), iface)
         .unwrap();
 
     let udp_handle = stack.add_udp_socket().unwrap();
     stack
         .udp_socket(udp_handle)
-        .bind(6969, IpListenEndpoint::UNSPECIFIED)
+        .bind(6969, ListenSocketAddr::UNSPECIFIED)
         .unwrap();
 
     loop {

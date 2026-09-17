@@ -232,7 +232,7 @@ pub(crate) fn link_local_addr(hardware_addr: HardwareAddress) -> Option<IfaceAdd
     bytes[1] = 0x80;
     bytes[8..].copy_from_slice(&hardware_addr.as_eui_64()?);
     Some(IfaceAddr {
-        cidr: IpCidr::new(Ipv6Address::from(bytes).into(), 64),
+        cidr: IpCidr::new(Ipv6Addr::from(bytes).into(), 64),
         origin: AddrOrigin::LinkLocal,
         preferred_until: None,
     })
@@ -375,7 +375,7 @@ impl<'d> Iface<'_, 'd> {
     }
 
     /// Check whether the given address is assigned to the interface.
-    pub fn has_ip_addr(&self, addr: impl Into<IpAddress>) -> bool {
+    pub fn has_ip_addr(&self, addr: impl Into<IpAddr>) -> bool {
         self.state().has_ip_addr(addr)
     }
 
@@ -415,7 +415,7 @@ impl<'d> Iface<'_, 'd> {
 
     /// Unassign an IP address from the interface, returning the CIDR it was
     /// assigned with, or `None` if it was not assigned.
-    pub fn remove_ip_addr(&mut self, addr: impl Into<IpAddress>) -> Option<IpCidr> {
+    pub fn remove_ip_addr(&mut self, addr: impl Into<IpAddr>) -> Option<IpCidr> {
         let addr = addr.into();
         let ip_addrs = &mut self.state_mut().ip_addrs;
         let index = ip_addrs.iter().position(|a| a.cidr.address() == addr)?;
@@ -621,7 +621,7 @@ impl<'d> Iface<'_, 'd> {
     ///
     /// The client is not told: it keeps using the address until it next renews.
     #[cfg(feature = "dhcpv4-server")]
-    pub fn remove_dhcpv4_server_lease(&mut self, address: Ipv4Address) -> bool {
+    pub fn remove_dhcpv4_server_lease(&mut self, address: Ipv4Addr) -> bool {
         match &mut self.state_mut().dhcpv4_server {
             Some(server) => server.remove_lease(address),
             None => false,
@@ -785,21 +785,21 @@ impl IfaceState<'_> {
     }
 
     #[inline(never)] // helps code size
-    pub(crate) fn has_ip_addr<T: Into<IpAddress>>(&self, addr: T) -> bool {
+    pub(crate) fn has_ip_addr<T: Into<IpAddr>>(&self, addr: T) -> bool {
         let addr = addr.into();
         self.cidrs().any(|probe| probe.address() == addr)
     }
 
     #[inline(never)] // helps code size
-    pub(crate) fn in_same_network(&self, addr: &IpAddress) -> bool {
+    pub(crate) fn in_same_network(&self, addr: &IpAddr) -> bool {
         self.cidrs().any(|cidr| cidr.contains_addr(addr))
     }
 
     /// Get the first IPv4 address of the interface.
     #[cfg(all(feature = "ipv4", any(feature = "icmp-ping-reply", feature = "multicast")))]
-    pub(crate) fn ipv4_addr(&self) -> Option<Ipv4Address> {
+    pub(crate) fn ipv4_addr(&self) -> Option<Ipv4Addr> {
         self.cidrs().find_map(|addr| match *addr {
-            IpCidr::Ipv4(cidr) => Some(cidr.address()),
+            IpCidr::V4(cidr) => Some(cidr.address()),
             #[allow(unreachable_patterns)]
             _ => None,
         })
@@ -820,11 +820,11 @@ impl IfaceState<'_> {
             all(feature = "medium-ieee802154", feature = "icmp-errors")
         )
     ))]
-    pub(crate) fn get_source_address_ipv4(&self, dst_addr: &Ipv4Address) -> Option<Ipv4Address> {
+    pub(crate) fn get_source_address_ipv4(&self, dst_addr: &Ipv4Addr) -> Option<Ipv4Addr> {
         let mut first_ipv4 = None;
         for cidr in self.cidrs() {
             #[allow(irrefutable_let_patterns)]
-            if let IpCidr::Ipv4(cidr) = cidr {
+            if let IpCidr::V4(cidr) = cidr {
                 // Return immediately if we find an address in the same subnet
                 if cidr.contains_addr(dst_addr) {
                     return Some(cidr.address());
@@ -841,40 +841,40 @@ impl IfaceState<'_> {
 
     /// Get a source address for the given destination address.
     #[cfg(any(feature = "udp", feature = "tcp"))]
-    pub(crate) fn get_source_address(&self, dst_addr: &IpAddress, #[allow(unused)] now: Instant) -> Option<IpAddress> {
+    pub(crate) fn get_source_address(&self, dst_addr: &IpAddr, #[allow(unused)] now: Instant) -> Option<IpAddr> {
         match dst_addr {
             #[cfg(feature = "ipv4")]
-            IpAddress::Ipv4(addr) => self.get_source_address_ipv4(addr).map(IpAddress::Ipv4),
+            IpAddr::V4(addr) => self.get_source_address_ipv4(addr).map(IpAddr::V4),
             #[cfg(feature = "ipv6")]
-            IpAddress::Ipv6(addr) => Some(IpAddress::Ipv6(self.get_source_address_ipv6(addr, now))),
+            IpAddr::V6(addr) => Some(IpAddr::V6(self.get_source_address_ipv6(addr, now))),
         }
     }
 
     /// Checks if an address is broadcast, taking into account ipv4 subnet-local
     /// broadcast addresses.
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154", feature = "udp"))]
-    pub(crate) fn is_broadcast(&self, address: &IpAddress) -> bool {
+    pub(crate) fn is_broadcast(&self, address: &IpAddr) -> bool {
         match address {
             #[cfg(feature = "ipv4")]
-            IpAddress::Ipv4(address) => self.is_broadcast_v4(*address),
+            IpAddr::V4(address) => self.is_broadcast_v4(*address),
             #[cfg(feature = "ipv6")]
-            IpAddress::Ipv6(_) => false,
+            IpAddr::V6(_) => false,
         }
     }
 
     /// Checks if an address is broadcast, taking into account ipv4 subnet-local
     /// broadcast addresses.
     #[cfg(feature = "ipv4")]
-    pub(crate) fn is_broadcast_v4(&self, address: Ipv4Address) -> bool {
+    pub(crate) fn is_broadcast_v4(&self, address: Ipv4Addr) -> bool {
         if address.is_broadcast() {
             return true;
         }
 
         self.cidrs()
             .filter_map(|own_cidr| match own_cidr {
-                IpCidr::Ipv4(own_ip) => Some(own_ip.broadcast()?),
+                IpCidr::V4(own_ip) => Some(own_ip.broadcast()?),
                 #[cfg(feature = "ipv6")]
-                IpCidr::Ipv6(_) => None,
+                IpCidr::V6(_) => None,
             })
             .any(|broadcast_address| address == broadcast_address)
     }
@@ -882,20 +882,20 @@ impl IfaceState<'_> {
     /// Checks if an ipv4 address is unicast, taking into account subnet broadcast addresses
     #[cfg(feature = "ipv4")]
     #[inline(never)] // helps code size
-    pub(crate) fn is_unicast_v4(&self, address: Ipv4Address) -> bool {
+    pub(crate) fn is_unicast_v4(&self, address: Ipv4Addr) -> bool {
         address.x_is_unicast() && !self.is_broadcast_v4(address)
     }
 
-    /// Determine if the given `Ipv6Address` is the solicited node
+    /// Determine if the given `Ipv6Addr` is the solicited node
     /// multicast address for a IPv6 addresses assigned to the interface.
     /// See [RFC 4291 § 2.7.1] for more details.
     ///
     /// [RFC 4291 § 2.7.1]: https://tools.ietf.org/html/rfc4291#section-2.7.1
     #[cfg(feature = "ipv6")]
-    pub(crate) fn has_solicited_node(&self, addr: Ipv6Address) -> bool {
+    pub(crate) fn has_solicited_node(&self, addr: Ipv6Addr) -> bool {
         self.cidrs().any(|cidr| {
             match *cidr {
-                IpCidr::Ipv6(cidr) if cidr.address() != Ipv6Address::LOCALHOST => {
+                IpCidr::V6(cidr) if cidr.address() != Ipv6Addr::LOCALHOST => {
                     // Take the lower order 24 bits of the IPv6 address and
                     // append those bits to FF02:0:0:0:0:1:FF00::/104.
                     addr.is_solicited_node_multicast() && addr.octets()[13..] == cidr.address().octets()[13..]
@@ -906,7 +906,7 @@ impl IfaceState<'_> {
     }
 
     /// Check whether the interface listens to given destination multicast IP address.
-    pub(crate) fn has_multicast_group<T: Into<IpAddress>>(&self, addr: T) -> bool {
+    pub(crate) fn has_multicast_group<T: Into<IpAddr>>(&self, addr: T) -> bool {
         let addr = addr.into();
 
         #[cfg(feature = "multicast")]
@@ -916,9 +916,9 @@ impl IfaceState<'_> {
 
         match addr {
             #[cfg(feature = "ipv4")]
-            IpAddress::Ipv4(key) => key == IPV4_MULTICAST_ALL_SYSTEMS,
+            IpAddr::V4(key) => key == IPV4_MULTICAST_ALL_SYSTEMS,
             #[cfg(feature = "ipv6")]
-            IpAddress::Ipv6(key) => key == IPV6_LINK_LOCAL_ALL_NODES || self.has_solicited_node(key),
+            IpAddr::V6(key) => key == IPV6_LINK_LOCAL_ALL_NODES || self.has_solicited_node(key),
         }
     }
 
@@ -956,8 +956,8 @@ impl IfaceState<'_> {
         #[cfg(feature = "ipv6")]
         for cidr in self.cidrs() {
             #[allow(irrefutable_let_patterns)]
-            if let IpCidr::Ipv6(cidr) = cidr
-                && cidr.address() != Ipv6Address::LOCALHOST
+            if let IpCidr::V6(cidr) = cidr
+                && cidr.address() != Ipv6Addr::LOCALHOST
             {
                 push(cidr.address().solicited_node().multicast_ethernet_addr());
             }
@@ -973,9 +973,9 @@ impl IfaceState<'_> {
 
     /// Get the first link-local IPv6 address of the interface, if present.
     #[cfg(any(feature = "slaac", all(feature = "ipv6", feature = "multicast")))]
-    pub(crate) fn link_local_ipv6_address(&self) -> Option<Ipv6Address> {
+    pub(crate) fn link_local_ipv6_address(&self) -> Option<Ipv6Addr> {
         self.cidrs().find_map(|cidr| match *cidr {
-            IpCidr::Ipv6(cidr) if cidr.address().is_link_local() => Some(cidr.address()),
+            IpCidr::V6(cidr) if cidr.address().is_link_local() => Some(cidr.address()),
             _ => None,
         })
     }
@@ -986,11 +986,11 @@ impl IfaceState<'_> {
     /// # Panics
     /// This function panics if the destination address is unspecified.
     #[cfg(feature = "ipv6")]
-    pub(crate) fn get_source_address_ipv6(&self, dst_addr: &Ipv6Address, now: Instant) -> Ipv6Address {
+    pub(crate) fn get_source_address_ipv6(&self, dst_addr: &Ipv6Addr, now: Instant) -> Ipv6Addr {
         assert!(!dst_addr.is_unspecified());
 
         // See RFC 6724 Section 4: Candidate source address
-        fn is_candidate_source_address(dst_addr: &Ipv6Address, src_addr: &Ipv6Address) -> bool {
+        fn is_candidate_source_address(dst_addr: &Ipv6Addr, src_addr: &Ipv6Addr) -> bool {
             // For all multicast and link-local destination addresses, the candidate address MUST
             // only be an address from the same link.
             if dst_addr.is_link_local() && !src_addr.is_link_local() {
@@ -1016,7 +1016,7 @@ impl IfaceState<'_> {
         }
 
         // See RFC 6724 Section 2.2: Common Prefix Length
-        fn common_prefix_length(dst_addr: &Ipv6Cidr, src_addr: &Ipv6Address) -> usize {
+        fn common_prefix_length(dst_addr: &Ipv6Cidr, src_addr: &Ipv6Addr) -> usize {
             let addr = dst_addr.address();
             let mut bits = 0;
             for (l, r) in addr.octets().iter().zip(src_addr.octets().iter()) {
@@ -1038,18 +1038,18 @@ impl IfaceState<'_> {
         fn ipv6_candidate(addr: &IfaceAddr) -> Option<(&IfaceAddr, &Ipv6Cidr)> {
             match &addr.cidr {
                 #[cfg(feature = "ipv4")]
-                IpCidr::Ipv4(_) => None,
-                IpCidr::Ipv6(cidr) => Some((addr, cidr)),
+                IpCidr::V4(_) => None,
+                IpCidr::V6(cidr) => Some((addr, cidr)),
             }
         }
 
         // If the destination address is a loopback address, or when there are no IPv6 addresses in
         // the interface, then the loopback address is the only candidate source address.
         if dst_addr.is_loopback() {
-            return Ipv6Address::LOCALHOST;
+            return Ipv6Addr::LOCALHOST;
         }
         let Some((mut candidate, mut candidate_cidr)) = self.ip_addrs.iter().find_map(ipv6_candidate) else {
-            return Ipv6Address::LOCALHOST;
+            return Ipv6Addr::LOCALHOST;
         };
 
         // See RFC 6724 Section 5: Source Address Selection. The rules are a priority
@@ -1060,7 +1060,7 @@ impl IfaceState<'_> {
         fn prefer(
             (candidate, candidate_cidr): (&IfaceAddr, &Ipv6Cidr),
             (addr, cidr): (&IfaceAddr, &Ipv6Cidr),
-            dst_addr: &Ipv6Address,
+            dst_addr: &Ipv6Addr,
             now: Instant,
         ) -> bool {
             // Rule 1: prefer the address that is the same as the output destination address.

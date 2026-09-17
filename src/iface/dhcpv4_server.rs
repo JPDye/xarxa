@@ -29,8 +29,8 @@ use crate::stack::{StackInner, push_ipv4_header};
 use crate::time::{Duration, Instant};
 use crate::wire::{
     DHCP_CLIENT_PORT, DHCP_HEADER_LEN, DHCP_MAGIC_NUMBER, DHCP_SERVER_PORT, DhcpFlags, DhcpMessageType, DhcpOption,
-    DhcpPacket, EthernetAddress, EthernetProtocol, IPV4_HEADER_LEN, IpAddress, IpCidr, IpProtocol, Ipv4Address,
-    Ipv4AddressExt, Ipv4Cidr, LINK_HEADER_LEN, UDP_HEADER_LEN, UdpPacket, dhcpv4_field as field,
+    DhcpPacket, EthernetAddress, EthernetProtocol, IPV4_HEADER_LEN, IpAddr, IpCidr, IpProtocol, Ipv4Addr, Ipv4AddrExt,
+    Ipv4Cidr, LINK_HEADER_LEN, UDP_HEADER_LEN, UdpPacket, dhcpv4_field as field,
 };
 
 /// How long an offered address is held back for the client it was offered to.
@@ -56,15 +56,15 @@ const MIN_MESSAGE_SIZE: usize = 300;
 #[non_exhaustive]
 pub struct DhcpServerConfig {
     /// First address of the pool leases are taken from.
-    pub pool_start: Ipv4Address,
+    pub pool_start: Ipv4Addr,
     /// Last address of the pool, inclusive.
-    pub pool_end: Ipv4Address,
+    pub pool_end: Ipv4Addr,
     /// How long a lease lasts. Clients asking for a shorter lease get it.
     pub lease_duration: Duration,
     /// The default gateway sent to clients, if any.
-    pub gateway: Option<Ipv4Address>,
+    pub gateway: Option<Ipv4Addr>,
     /// The DNS servers sent to clients. Empty sends none.
-    pub dns_servers: Vec<Ipv4Address, DHCP_MAX_DNS_SERVER_COUNT>,
+    pub dns_servers: Vec<Ipv4Addr, DHCP_MAX_DNS_SERVER_COUNT>,
     /// Extra options added to every OFFER and ACK.
     pub outgoing_options: &'static [DhcpOption<'static>],
 }
@@ -72,7 +72,7 @@ pub struct DhcpServerConfig {
 impl DhcpServerConfig {
     /// A configuration leasing addresses from `pool_start` to `pool_end`
     /// (inclusive) for one hour, with no gateway and no DNS servers.
-    pub fn new(pool_start: Ipv4Address, pool_end: Ipv4Address) -> Self {
+    pub fn new(pool_start: Ipv4Addr, pool_end: Ipv4Addr) -> Self {
         Self {
             pool_start,
             pool_end,
@@ -131,7 +131,7 @@ pub enum DhcpServerLeaseState {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DhcpServerLease {
-    address: Ipv4Address,
+    address: Ipv4Addr,
     hardware_addr: EthernetAddress,
     client_id: [u8; DHCP_SERVER_CLIENT_ID_SIZE],
     client_id_len: u8,
@@ -142,7 +142,7 @@ pub struct DhcpServerLease {
 impl DhcpServerLease {
     fn new(id: &ClientId<'_>, hardware_addr: EthernetAddress) -> Self {
         let mut lease = Self {
-            address: Ipv4Address::UNSPECIFIED,
+            address: Ipv4Addr::UNSPECIFIED,
             hardware_addr,
             client_id: [0; DHCP_SERVER_CLIENT_ID_SIZE],
             client_id_len: 0,
@@ -157,7 +157,7 @@ impl DhcpServerLease {
     }
 
     /// The leased address.
-    pub fn address(&self) -> Ipv4Address {
+    pub fn address(&self) -> Ipv4Addr {
         self.address
     }
 
@@ -226,8 +226,8 @@ enum Answer {
 /// A reply about to be built: the fields that vary between OFFER, ACK and NAK.
 struct Reply {
     message_type: DhcpMessageType,
-    ciaddr: Ipv4Address,
-    yiaddr: Ipv4Address,
+    ciaddr: Ipv4Addr,
+    yiaddr: Ipv4Addr,
     lease_duration: Option<Duration>,
     message: Option<&'static str>,
 }
@@ -251,13 +251,13 @@ impl Server {
         &self.leases
     }
 
-    pub(crate) fn remove_lease(&mut self, address: Ipv4Address) -> bool {
+    pub(crate) fn remove_lease(&mut self, address: Ipv4Addr) -> bool {
         let len = self.leases.len();
         self.leases.retain(|lease| lease.address != address);
         self.leases.len() != len
     }
 
-    fn in_pool(&self, addr: Ipv4Address) -> bool {
+    fn in_pool(&self, addr: Ipv4Addr) -> bool {
         (self.config.pool_start.to_bits()..=self.config.pool_end.to_bits()).contains(&addr.to_bits())
     }
 
@@ -271,7 +271,7 @@ impl Server {
 
     /// Whether `addr` can be given to the client `id`: no active lease holds it,
     /// other than the client's own.
-    fn available_for(&self, addr: Ipv4Address, id: &ClientId<'_>, now: Instant) -> bool {
+    fn available_for(&self, addr: Ipv4Addr, id: &ClientId<'_>, now: Instant) -> bool {
         !self.leases.iter().any(|lease| {
             lease.address == addr
                 && lease.is_active(now)
@@ -309,13 +309,12 @@ impl Server {
     fn pick_addr(
         &self,
         id: &ClientId<'_>,
-        requested: Option<Ipv4Address>,
+        requested: Option<Ipv4Addr>,
         now: Instant,
         server_cidr: &Ipv4Cidr,
-    ) -> Option<Ipv4Address> {
-        let usable = |addr: Ipv4Address| {
-            self.in_pool(addr) && addr_valid(addr, server_cidr) && self.available_for(addr, id, now)
-        };
+    ) -> Option<Ipv4Addr> {
+        let usable =
+            |addr: Ipv4Addr| self.in_pool(addr) && addr_valid(addr, server_cidr) && self.available_for(addr, id, now);
 
         if let Some(i) = self.find_by_client(id)
             && usable(self.leases[i].address)
@@ -331,7 +330,7 @@ impl Server {
         // pool inside the subnet yields a free address within that many steps
         // (plus the handful of reserved addresses), or is exhausted.
         for bits in self.config.pool_start.to_bits()..=self.config.pool_end.to_bits() {
-            let addr = Ipv4Address::from_bits(bits);
+            let addr = Ipv4Addr::from_bits(bits);
             if addr_valid(addr, server_cidr) && self.available_for(addr, id, now) {
                 return Some(addr);
             }
@@ -356,7 +355,7 @@ impl Server {
         checksum_caps: &ChecksumCapabilities,
         message_type: DhcpMessageType,
         packet: &DhcpPacket<'_>,
-    ) -> Option<(PacketBuf, Ipv4Address, EthernetAddress)> {
+    ) -> Option<(PacketBuf, Ipv4Addr, EthernetAddress)> {
         let chaddr = packet.client_hardware_address();
         let id = match packet.option(field::OPT_CLIENT_ID) {
             Some(data) if !data.is_empty() && data.len() <= DHCP_SERVER_CLIENT_ID_SIZE => ClientId::Id(data),
@@ -400,7 +399,7 @@ impl Server {
                 // RFC 2131 §4.3.5: configuration parameters only, no lease time,
                 // no yiaddr, sent to ciaddr.
                 let ciaddr = packet.client_ip();
-                if ciaddr == Ipv4Address::UNSPECIFIED {
+                if ciaddr == Ipv4Addr::UNSPECIFIED {
                     return None;
                 }
                 debug!("DHCP server: answering INFORM from {}", ciaddr);
@@ -411,7 +410,7 @@ impl Server {
                     Reply {
                         message_type: DhcpMessageType::Ack,
                         ciaddr,
-                        yiaddr: Ipv4Address::UNSPECIFIED,
+                        yiaddr: Ipv4Addr::UNSPECIFIED,
                         lease_duration: None,
                         message: None,
                     },
@@ -432,7 +431,7 @@ impl Server {
         packet: &DhcpPacket<'_>,
         id: &ClientId<'_>,
         chaddr: EthernetAddress,
-    ) -> Option<(PacketBuf, Ipv4Address, EthernetAddress)> {
+    ) -> Option<(PacketBuf, Ipv4Addr, EthernetAddress)> {
         let requested = packet.option(field::OPT_REQUESTED_IP).and_then(parse_ipv4);
         let requested_lease = packet
             .option(field::OPT_IP_LEASE_TIME)
@@ -477,7 +476,7 @@ impl Server {
             packet,
             Reply {
                 message_type: DhcpMessageType::Offer,
-                ciaddr: Ipv4Address::UNSPECIFIED,
+                ciaddr: Ipv4Addr::UNSPECIFIED,
                 yiaddr: addr,
                 lease_duration: Some(duration),
                 message: None,
@@ -493,7 +492,7 @@ impl Server {
         packet: &DhcpPacket<'_>,
         id: &ClientId<'_>,
         chaddr: EthernetAddress,
-    ) -> Option<(PacketBuf, Ipv4Address, EthernetAddress)> {
+    ) -> Option<(PacketBuf, Ipv4Addr, EthernetAddress)> {
         let requested = packet.option(field::OPT_REQUESTED_IP).and_then(parse_ipv4);
         let server_id = packet.option(field::OPT_SERVER_IDENTIFIER).and_then(parse_ipv4);
         let ciaddr = packet.client_ip();
@@ -515,7 +514,7 @@ impl Server {
         // RENEWING and REBINDING in ciaddr.
         let addr = if let Some(addr) = requested {
             addr
-        } else if !selecting && ciaddr != Ipv4Address::UNSPECIFIED {
+        } else if !selecting && ciaddr != Ipv4Addr::UNSPECIFIED {
             ciaddr
         } else {
             trace!("DHCP server: malformed REQUEST from {}", chaddr);
@@ -590,15 +589,15 @@ impl Server {
         checksum_caps: &ChecksumCapabilities,
         packet: &DhcpPacket<'_>,
         reason: &'static str,
-    ) -> Option<(PacketBuf, Ipv4Address, EthernetAddress)> {
+    ) -> Option<(PacketBuf, Ipv4Addr, EthernetAddress)> {
         self.build_reply(
             server_cidr,
             checksum_caps,
             packet,
             Reply {
                 message_type: DhcpMessageType::Nak,
-                ciaddr: Ipv4Address::UNSPECIFIED,
-                yiaddr: Ipv4Address::UNSPECIFIED,
+                ciaddr: Ipv4Addr::UNSPECIFIED,
+                yiaddr: Ipv4Addr::UNSPECIFIED,
                 lease_duration: None,
                 message: Some(reason),
             },
@@ -616,7 +615,7 @@ impl Server {
         checksum_caps: &ChecksumCapabilities,
         request: &DhcpPacket<'_>,
         reply: Reply,
-    ) -> Option<(PacketBuf, Ipv4Address, EthernetAddress)> {
+    ) -> Option<(PacketBuf, Ipv4Addr, EthernetAddress)> {
         let chaddr = request.client_hardware_address();
         let flags = request.flags();
 
@@ -625,11 +624,11 @@ impl Server {
         // hardware address. NAKs always go to broadcast: the client may not
         // have an address it can be reached on.
         let (dst_addr, dst_hw) = if reply.message_type == DhcpMessageType::Nak {
-            (Ipv4Address::BROADCAST, EthernetAddress::BROADCAST)
-        } else if reply.ciaddr != Ipv4Address::UNSPECIFIED {
+            (Ipv4Addr::BROADCAST, EthernetAddress::BROADCAST)
+        } else if reply.ciaddr != Ipv4Addr::UNSPECIFIED {
             (reply.ciaddr, chaddr)
         } else if flags.contains(DhcpFlags::BROADCAST) {
-            (Ipv4Address::BROADCAST, EthernetAddress::BROADCAST)
+            (Ipv4Addr::BROADCAST, EthernetAddress::BROADCAST)
         } else {
             (reply.yiaddr, chaddr)
         };
@@ -644,8 +643,8 @@ impl Server {
         packet.set_flags(flags);
         packet.set_client_ip(reply.ciaddr);
         packet.set_your_ip(reply.yiaddr);
-        packet.set_server_ip(Ipv4Address::UNSPECIFIED);
-        packet.set_relay_agent_ip(Ipv4Address::UNSPECIFIED);
+        packet.set_server_ip(Ipv4Addr::UNSPECIFIED);
+        packet.set_relay_agent_ip(Ipv4Addr::UNSPECIFIED);
 
         let mut options = packet.options_mut();
         let result = (|| {
@@ -713,7 +712,7 @@ impl Server {
         udp.set_dst_port(DHCP_CLIENT_PORT);
         udp.set_len((UDP_HEADER_LEN + len) as u16);
         if !checksum_caps.udp.tx {
-            udp.fill_checksum(&IpAddress::Ipv4(server_cidr.address()), &IpAddress::Ipv4(dst_addr));
+            udp.fill_checksum(&IpAddr::V4(server_cidr.address()), &IpAddr::V4(dst_addr));
         } else {
             // A zero checksum means "no checksum" on UDP-over-IPv4, and is what a
             // device that computes it itself expects to find in the field.
@@ -726,7 +725,7 @@ impl Server {
 
 /// Whether `addr` can be leased at all: a unicast address of the served subnet
 /// that is not the server's own, the network address, or the broadcast address.
-fn addr_valid(addr: Ipv4Address, server_cidr: &Ipv4Cidr) -> bool {
+fn addr_valid(addr: Ipv4Addr, server_cidr: &Ipv4Cidr) -> bool {
     addr.x_is_unicast()
         && server_cidr.contains_addr(&addr)
         && addr != server_cidr.address()
@@ -738,7 +737,7 @@ impl IfaceState<'_> {
     /// The subnet the server serves: the interface's first IPv4 address.
     fn dhcpv4_server_cidr(&self) -> Option<Ipv4Cidr> {
         self.cidrs().find_map(|cidr| match cidr {
-            IpCidr::Ipv4(cidr) => Some(*cidr),
+            IpCidr::V4(cidr) => Some(*cidr),
             #[allow(unreachable_patterns)]
             _ => None,
         })
@@ -747,7 +746,7 @@ impl IfaceState<'_> {
     /// Process a DHCP packet received on this interface from `src_ip`, and send
     /// the reply, if it gets one. `payload` is the UDP payload; the ports have
     /// already been checked by the caller.
-    pub(crate) fn dhcpv4_server_process(&mut self, inner: &mut StackInner, src_ip: Ipv4Address, payload: &mut [u8]) {
+    pub(crate) fn dhcpv4_server_process(&mut self, inner: &mut StackInner, src_ip: Ipv4Addr, payload: &mut [u8]) {
         let checksum_caps = self.checksum_caps();
         let server_cidr = self.dhcpv4_server_cidr();
         let Some(server) = &mut self.dhcpv4_server else { return };
@@ -776,7 +775,7 @@ impl IfaceState<'_> {
             debug!("DHCP server: pkt from {} has no message type", src_ip);
             return;
         };
-        if packet.relay_agent_ip() != Ipv4Address::UNSPECIFIED {
+        if packet.relay_agent_ip() != Ipv4Addr::UNSPECIFIED {
             trace!("DHCP server: relayed requests are not supported");
             return;
         }
@@ -798,9 +797,9 @@ impl IfaceState<'_> {
     }
 }
 
-fn parse_ipv4(data: &[u8]) -> Option<Ipv4Address> {
+fn parse_ipv4(data: &[u8]) -> Option<Ipv4Addr> {
     let octets: [u8; 4] = data.get(..4)?.try_into().ok()?;
-    Some(Ipv4Address::from_octets(octets))
+    Some(Ipv4Addr::from_octets(octets))
 }
 
 fn parse_u32(data: &[u8]) -> Option<u32> {
@@ -822,11 +821,11 @@ mod test {
     const CLIENT_HW: EthernetAddress = EthernetAddress([0x02, 0, 0, 0, 0, 0x42]);
     const CLIENT2_HW: EthernetAddress = EthernetAddress([0x02, 0, 0, 0, 0, 0x43]);
     const CLIENT3_HW: EthernetAddress = EthernetAddress([0x02, 0, 0, 0, 0, 0x44]);
-    const SERVER_IP: Ipv4Address = Ipv4Address::new(192, 168, 1, 1);
-    const DNS_IP: Ipv4Address = Ipv4Address::new(1, 1, 1, 1);
-    const POOL_START: Ipv4Address = Ipv4Address::new(192, 168, 1, 10);
-    const POOL_END: Ipv4Address = Ipv4Address::new(192, 168, 1, 11);
-    const OTHER_SERVER_IP: Ipv4Address = Ipv4Address::new(192, 168, 1, 2);
+    const SERVER_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
+    const DNS_IP: Ipv4Addr = Ipv4Addr::new(1, 1, 1, 1);
+    const POOL_START: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 10);
+    const POOL_END: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 11);
+    const OTHER_SERVER_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 2);
     const XID: u32 = 0xabcd1234;
     const IFACE: IfaceHandle = IfaceHandle::new(0);
     const LEASE_SECS: u64 = 300;
@@ -871,9 +870,9 @@ mod test {
     struct Msg {
         message_type: DhcpMessageType,
         chaddr: EthernetAddress,
-        ciaddr: Ipv4Address,
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
+        ciaddr: Ipv4Addr,
+        src_ip: Ipv4Addr,
+        dst_ip: Ipv4Addr,
         flags: DhcpFlags,
         options: Vec<(u8, Vec<u8>)>,
     }
@@ -884,9 +883,9 @@ mod test {
             Self {
                 message_type,
                 chaddr,
-                ciaddr: Ipv4Address::UNSPECIFIED,
-                src_ip: Ipv4Address::UNSPECIFIED,
-                dst_ip: Ipv4Address::BROADCAST,
+                ciaddr: Ipv4Addr::UNSPECIFIED,
+                src_ip: Ipv4Addr::UNSPECIFIED,
+                dst_ip: Ipv4Addr::BROADCAST,
                 flags: DhcpFlags::empty(),
                 options: Vec::new(),
             }
@@ -897,16 +896,16 @@ mod test {
             self
         }
 
-        fn requested_ip(self, addr: Ipv4Address) -> Self {
+        fn requested_ip(self, addr: Ipv4Addr) -> Self {
             self.opt(field::OPT_REQUESTED_IP, &addr.octets())
         }
 
-        fn server_id(self, addr: Ipv4Address) -> Self {
+        fn server_id(self, addr: Ipv4Addr) -> Self {
             self.opt(field::OPT_SERVER_IDENTIFIER, &addr.octets())
         }
 
         /// From a configured client straight to the server, the RENEW shape.
-        fn unicast_from(mut self, addr: Ipv4Address) -> Self {
+        fn unicast_from(mut self, addr: Ipv4Addr) -> Self {
             self.ciaddr = addr;
             self.src_ip = addr;
             self.dst_ip = SERVER_IP;
@@ -923,9 +922,9 @@ mod test {
             packet.set_transaction_id(XID);
             packet.set_flags(msg.flags);
             packet.set_client_ip(msg.ciaddr);
-            packet.set_your_ip(Ipv4Address::UNSPECIFIED);
-            packet.set_server_ip(Ipv4Address::UNSPECIFIED);
-            packet.set_relay_agent_ip(Ipv4Address::UNSPECIFIED);
+            packet.set_your_ip(Ipv4Addr::UNSPECIFIED);
+            packet.set_server_ip(Ipv4Addr::UNSPECIFIED);
+            packet.set_relay_agent_ip(Ipv4Addr::UNSPECIFIED);
             let mut writer = packet.options_mut();
             writer
                 .emit(DhcpOption {
@@ -941,7 +940,7 @@ mod test {
         };
         dhcp.truncate(dhcp_len);
 
-        let dst_hw = if msg.dst_ip == Ipv4Address::BROADCAST {
+        let dst_hw = if msg.dst_ip == Ipv4Addr::BROADCAST {
             EthernetAddress::BROADCAST
         } else {
             SERVER_HW
@@ -970,7 +969,7 @@ mod test {
             udp.set_dst_port(DHCP_SERVER_PORT);
             udp.set_len((UDP_HEADER_LEN + dhcp_len) as u16);
             udp.payload_mut().copy_from_slice(&dhcp);
-            udp.fill_checksum(&IpAddress::Ipv4(msg.src_ip), &IpAddress::Ipv4(msg.dst_ip));
+            udp.fill_checksum(&IpAddr::V4(msg.src_ip), &IpAddr::V4(msg.dst_ip));
         }
         frame
     }
@@ -983,8 +982,8 @@ mod test {
 
     /// What a transmitted reply is: the addressing and the DHCP payload.
     struct SentDhcp {
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
+        src_ip: Ipv4Addr,
+        dst_ip: Ipv4Addr,
         dst_hw: EthernetAddress,
         dhcp: Vec<u8>,
     }
@@ -1000,7 +999,7 @@ mod test {
         assert_eq!(ip.next_header(), IpProtocol::Udp);
         let (src_ip, dst_ip) = (ip.src_addr(), ip.dst_addr());
         let udp = UdpPacket::new_checked(&mut frame[ETHERNET_HEADER_LEN + IPV4_HEADER_LEN..]).unwrap();
-        assert!(udp.verify_checksum(&IpAddress::Ipv4(src_ip), &IpAddress::Ipv4(dst_ip)));
+        assert!(udp.verify_checksum(&IpAddr::V4(src_ip), &IpAddr::V4(dst_ip)));
         assert_eq!(udp.src_port(), DHCP_SERVER_PORT);
         assert_eq!(udp.dst_port(), DHCP_CLIENT_PORT);
         // Replies are padded to the BOOTP minimum message size.
@@ -1059,8 +1058,8 @@ mod test {
             assert_eq!(packet.opcode(), DhcpOpCode::Reply);
             assert_eq!(packet.transaction_id(), XID);
             assert_eq!(packet.your_ip(), POOL_START);
-            assert_eq!(packet.client_ip(), Ipv4Address::UNSPECIFIED);
-            assert_eq!(packet.relay_agent_ip(), Ipv4Address::UNSPECIFIED);
+            assert_eq!(packet.client_ip(), Ipv4Addr::UNSPECIFIED);
+            assert_eq!(packet.relay_agent_ip(), Ipv4Addr::UNSPECIFIED);
             assert_eq!(packet.client_hardware_address(), CLIENT_HW);
             assert_eq!(
                 packet.option(field::OPT_SERVER_IDENTIFIER),
@@ -1135,7 +1134,7 @@ mod test {
         send(&mut stack, &rx, msg, 0);
         let mut sent = last_sent(&tx);
         assert_eq!(message_type(&mut sent), DhcpMessageType::Offer);
-        assert_eq!(sent.dst_ip, Ipv4Address::BROADCAST);
+        assert_eq!(sent.dst_ip, Ipv4Addr::BROADCAST);
         assert_eq!(sent.dst_hw, EthernetAddress::BROADCAST);
         // The flags are echoed back (RFC 2131 table 3).
         let packet = DhcpPacket::new_checked(&mut sent.dhcp).unwrap();
@@ -1206,10 +1205,10 @@ mod test {
         );
         let mut sent = last_sent(&tx);
         assert_eq!(message_type(&mut sent), DhcpMessageType::Nak);
-        assert_eq!(sent.dst_ip, Ipv4Address::BROADCAST);
+        assert_eq!(sent.dst_ip, Ipv4Addr::BROADCAST);
         assert_eq!(sent.dst_hw, EthernetAddress::BROADCAST);
         let packet = DhcpPacket::new_checked(&mut sent.dhcp).unwrap();
-        assert_eq!(packet.your_ip(), Ipv4Address::UNSPECIFIED);
+        assert_eq!(packet.your_ip(), Ipv4Addr::UNSPECIFIED);
         assert_eq!(
             packet.option(field::OPT_SERVER_IDENTIFIER),
             Some(&SERVER_IP.octets()[..])
@@ -1273,7 +1272,7 @@ mod test {
         send(
             &mut stack,
             &rx,
-            Msg::new(DhcpMessageType::Request, CLIENT2_HW).unicast_from(Ipv4Address::new(192, 168, 1, 200)),
+            Msg::new(DhcpMessageType::Request, CLIENT2_HW).unicast_from(Ipv4Addr::new(192, 168, 1, 200)),
             1,
         );
         assert_eq!(tx.borrow().len(), 1);
@@ -1308,7 +1307,7 @@ mod test {
         send(
             &mut stack,
             &rx,
-            Msg::new(DhcpMessageType::Request, CLIENT_HW).requested_ip(Ipv4Address::new(10, 0, 0, 5)),
+            Msg::new(DhcpMessageType::Request, CLIENT_HW).requested_ip(Ipv4Addr::new(10, 0, 0, 5)),
             4,
         );
         let mut sent = last_sent(&tx);
@@ -1502,7 +1501,7 @@ mod test {
 
         // A statically-configured host asks for the other parameters: an ACK
         // with them, no lease time, no yiaddr, and no lease recorded.
-        let client_ip = Ipv4Address::new(192, 168, 1, 77);
+        let client_ip = Ipv4Addr::new(192, 168, 1, 77);
         send(
             &mut stack,
             &rx,
@@ -1514,7 +1513,7 @@ mod test {
         assert_eq!(sent.dst_ip, client_ip);
         assert_eq!(sent.dst_hw, CLIENT_HW);
         let packet = DhcpPacket::new_checked(&mut sent.dhcp).unwrap();
-        assert_eq!(packet.your_ip(), Ipv4Address::UNSPECIFIED);
+        assert_eq!(packet.your_ip(), Ipv4Addr::UNSPECIFIED);
         assert_eq!(packet.client_ip(), client_ip);
         assert_eq!(packet.option(field::OPT_IP_LEASE_TIME), None);
         assert_eq!(packet.option(field::OPT_SUBNET_MASK), Some(&[255, 255, 255, 0][..]));
@@ -1634,7 +1633,7 @@ mod test {
         {
             let ip_and_udp = ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN;
             let mut packet = DhcpPacket::new_unchecked(&mut msg[ip_and_udp..]);
-            packet.set_relay_agent_ip(Ipv4Address::new(10, 0, 0, 1));
+            packet.set_relay_agent_ip(Ipv4Addr::new(10, 0, 0, 1));
         }
         rx.borrow_mut().push_back(msg);
         stack.poll(at(0));

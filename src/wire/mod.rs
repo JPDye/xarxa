@@ -121,29 +121,28 @@ pub use self::dhcpv4::{
 
 pub use self::ip::checksum;
 pub use self::ip::{
-    Address as IpAddress, Cidr as IpCidr, Endpoint as IpEndpoint, ListenEndpoint as IpListenEndpoint,
-    Protocol as IpProtocol, Version as IpVersion,
+    Address as IpAddr, Cidr as IpCidr, ListenSocketAddr, Protocol as IpProtocol, SocketAddr, Version as IpVersion,
 };
 
 #[cfg(feature = "ipv4")]
 pub use self::ipv4::{
-    Address as Ipv4Address, Cidr as Ipv4Cidr, FRAGMENT_PAYLOAD_ALIGNMENT as IPV4_FRAGMENT_PAYLOAD_ALIGNMENT,
+    Address as Ipv4Addr, Cidr as Ipv4Cidr, FRAGMENT_PAYLOAD_ALIGNMENT as IPV4_FRAGMENT_PAYLOAD_ALIGNMENT,
     HEADER_LEN as IPV4_HEADER_LEN, MIN_MTU as IPV4_MIN_MTU, MULTICAST_ALL_ROUTERS as IPV4_MULTICAST_ALL_ROUTERS,
     MULTICAST_ALL_SYSTEMS as IPV4_MULTICAST_ALL_SYSTEMS, Packet as Ipv4Packet,
 };
 
 #[cfg(feature = "ipv4")]
-pub(crate) use self::ipv4::AddressExt as Ipv4AddressExt;
+pub(crate) use self::ipv4::AddressExt as Ipv4AddrExt;
 
 #[cfg(feature = "ipv6")]
 pub use self::ipv6::{
-    Address as Ipv6Address, Cidr as Ipv6Cidr, HEADER_LEN as IPV6_HEADER_LEN,
+    Address as Ipv6Addr, Cidr as Ipv6Cidr, HEADER_LEN as IPV6_HEADER_LEN,
     LINK_LOCAL_ALL_MLDV2_ROUTERS as IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS,
     LINK_LOCAL_ALL_NODES as IPV6_LINK_LOCAL_ALL_NODES, LINK_LOCAL_ALL_ROUTERS as IPV6_LINK_LOCAL_ALL_ROUTERS,
     MIN_MTU as IPV6_MIN_MTU, Packet as Ipv6Packet,
 };
 #[cfg(feature = "ipv6")]
-pub(crate) use self::ipv6::{AddressExt as Ipv6AddressExt, MulticastScope as Ipv6MulticastScope};
+pub(crate) use self::ipv6::{AddressExt as Ipv6AddrExt, MulticastScope as Ipv6MulticastScope};
 
 #[cfg(feature = "ipv6")]
 pub use self::ipv6ext::{

@@ -13,7 +13,7 @@ use crate::wire::IgmpPacket;
 #[cfg(feature = "udp")]
 use crate::wire::UdpPacket;
 #[cfg(all(feature = "medium-ethernet", feature = "ipv4"))]
-use crate::wire::{ArpHardware, ArpPacket, EthernetAddress, Ipv4Address};
+use crate::wire::{ArpHardware, ArpPacket, EthernetAddress, Ipv4Addr};
 #[cfg(feature = "dns")]
 use crate::wire::{DnsFlags, DnsPacket, DnsQuestion, DnsRecord, DnsRecordData};
 #[cfg(feature = "medium-ethernet")]
@@ -188,7 +188,7 @@ fn log_sixlowpan(buf: &mut [u8], ll_src: Option<Ieee802154Address>, ll_dst: Opti
 fn log_sixlowpan_next_header(next_header: SixlowpanNextHeader, buf: &mut [u8]) {
     match next_header {
         SixlowpanNextHeader::Compressed => log_sixlowpan_nhc(buf),
-        SixlowpanNextHeader::Uncompressed(protocol) => log_transport(protocol, IpVersion::Ipv6, buf),
+        SixlowpanNextHeader::Uncompressed(protocol) => log_transport(protocol, IpVersion::V6, buf),
     }
 }
 
@@ -315,7 +315,7 @@ fn log_arp(buf: &mut [u8]) {
         && packet.hardware_len() == 6
         && packet.protocol_len() == 4
     {
-        let ip = |b: &[u8]| Ipv4Address::new(b[0], b[1], b[2], b[3]);
+        let ip = |b: &[u8]| Ipv4Addr::new(b[0], b[1], b[2], b[3]);
         trace!(
             "ARP op={} sha={} spa={} tha={} tpa={}",
             packet.operation(),
@@ -343,9 +343,9 @@ fn log_ip(buf: &mut [u8]) {
     }
     match IpVersion::of_packet(buf) {
         #[cfg(feature = "ipv4")]
-        Ok(IpVersion::Ipv4) => log_ipv4(buf),
+        Ok(IpVersion::V4) => log_ipv4(buf),
         #[cfg(feature = "ipv6")]
-        Ok(IpVersion::Ipv6) => log_ipv6(buf),
+        Ok(IpVersion::V6) => log_ipv6(buf),
         #[allow(unreachable_patterns)]
         _ => trace!("IP: unknown version, len={}", buf.len()),
     }
@@ -381,7 +381,7 @@ fn log_ipv4(buf: &mut [u8]) {
         trace!("fragment len={}", payload.len());
         return;
     }
-    log_transport(proto, IpVersion::Ipv4, payload);
+    log_transport(proto, IpVersion::V4, payload);
 }
 
 #[cfg(feature = "ipv6")]
@@ -439,7 +439,7 @@ fn log_ipv6(buf: &mut [u8]) {
         payload = &mut payload[len..];
     }
 
-    log_transport(proto, IpVersion::Ipv6, payload);
+    log_transport(proto, IpVersion::V6, payload);
 }
 
 fn log_transport(proto: IpProtocol, version: IpVersion, payload: &mut [u8]) {
@@ -449,11 +449,11 @@ fn log_transport(proto: IpProtocol, version: IpVersion, payload: &mut [u8]) {
         #[cfg(feature = "tcp")]
         (IpProtocol::Tcp, _) => log_tcp(payload),
         #[cfg(feature = "ipv4")]
-        (IpProtocol::Icmp, IpVersion::Ipv4) => log_icmpv4(payload),
+        (IpProtocol::Icmp, IpVersion::V4) => log_icmpv4(payload),
         #[cfg(feature = "ipv6")]
-        (IpProtocol::Icmpv6, IpVersion::Ipv6) => log_icmpv6(payload),
+        (IpProtocol::Icmpv6, IpVersion::V6) => log_icmpv6(payload),
         #[cfg(all(feature = "ipv4", feature = "multicast"))]
-        (IpProtocol::Igmp, IpVersion::Ipv4) => log_igmp(payload),
+        (IpProtocol::Igmp, IpVersion::V4) => log_igmp(payload),
         (IpProtocol::Ipv6NoNxt, _) => {}
         _ => trace!("{} payload len={}", proto, payload.len()),
     }

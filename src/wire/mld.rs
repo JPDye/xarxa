@@ -8,7 +8,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 
 use super::Result;
 use crate::error::Malformed;
-use crate::wire::Ipv6Address;
+use crate::wire::Ipv6Addr;
 use crate::wire::icmpv6::{Packet, field};
 
 open_enum! {
@@ -50,8 +50,8 @@ impl<'a> Packet<'a> {
 
     /// Return the address being queried.
     #[inline]
-    pub fn mcast_addr(&self) -> Ipv6Address {
-        Ipv6Address::from_octets(self.buffer[field::QUERY_MCAST_ADDR].try_into().unwrap())
+    pub fn mcast_addr(&self) -> Ipv6Addr {
+        Ipv6Addr::from_octets(self.buffer[field::QUERY_MCAST_ADDR].try_into().unwrap())
     }
 
     /// Return the Suppress Router-Side Processing flag.
@@ -104,7 +104,7 @@ impl<'a> Packet<'a> {
 
     /// Set the address being queried.
     #[inline]
-    pub fn set_mcast_addr(&mut self, addr: Ipv6Address) {
+    pub fn set_mcast_addr(&mut self, addr: Ipv6Addr) {
         self.buffer[field::QUERY_MCAST_ADDR].copy_from_slice(&addr.octets());
     }
 
@@ -213,8 +213,8 @@ impl<'a> AddressRecord<'a> {
 
     /// Return the multicast address field.
     #[inline]
-    pub fn mcast_addr(&self) -> Ipv6Address {
-        Ipv6Address::from_octets(self.buffer[field::RECORD_MCAST_ADDR].try_into().unwrap())
+    pub fn mcast_addr(&self) -> Ipv6Addr {
+        Ipv6Addr::from_octets(self.buffer[field::RECORD_MCAST_ADDR].try_into().unwrap())
     }
 
     /// Return a pointer to the address records.
@@ -252,7 +252,7 @@ impl<'a> AddressRecord<'a> {
     /// # Panics
     /// This function panics if the given address is not a multicast address.
     #[inline]
-    pub fn set_mcast_addr(&mut self, addr: Ipv6Address) {
+    pub fn set_mcast_addr(&mut self, addr: Ipv6Addr) {
         assert!(addr.is_multicast());
         self.buffer[field::RECORD_MCAST_ADDR].copy_from_slice(&addr.octets());
     }
@@ -296,7 +296,7 @@ mod test {
         assert_eq!(packet.qqic(), 0x12);
         assert_eq!(packet.num_srcs(), 0x01);
         assert_eq!(
-            Ipv6Address::from_octets(packet.payload().try_into().unwrap()),
+            Ipv6Addr::from_octets(packet.payload().try_into().unwrap()),
             IPV6_LINK_LOCAL_ALL_ROUTERS
         );
         assert!(packet.verify_checksum(&IPV6_LINK_LOCAL_ALL_NODES, &IPV6_LINK_LOCAL_ALL_ROUTERS));
@@ -337,7 +337,7 @@ mod test {
         assert_eq!(addr_rcrd.num_srcs(), 0x01);
         assert_eq!(addr_rcrd.mcast_addr(), IPV6_LINK_LOCAL_ALL_NODES);
         assert_eq!(
-            Ipv6Address::from_octets(addr_rcrd.payload().try_into().unwrap()),
+            Ipv6Addr::from_octets(addr_rcrd.payload().try_into().unwrap()),
             IPV6_LINK_LOCAL_ALL_ROUTERS
         );
     }

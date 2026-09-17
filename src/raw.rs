@@ -29,7 +29,7 @@ use crate::wire::Ipv6Packet;
 #[cfg(feature = "raw-ethernet")]
 use crate::wire::{EthernetFrame, EthernetProtocol};
 #[cfg(feature = "raw-ip")]
-use crate::wire::{IpAddress, IpProtocol, IpVersion, LINK_HEADER_LEN};
+use crate::wire::{IpAddr, IpProtocol, IpVersion, LINK_HEADER_LEN};
 
 define_handle! {
     /// A handle to a raw socket added to a [`Stack`].
@@ -215,18 +215,18 @@ fn copy_packet(buf: &PacketBuf) -> Option<PacketBuf> {
 /// Parse the destination address and protocol out of an outgoing IP packet,
 /// verifying that the IP header is well-formed. Returns `None` if it is not.
 #[cfg(feature = "raw-ip")]
-fn parse_ip_headers(buf: &mut [u8]) -> Option<(IpAddress, IpProtocol)> {
+fn parse_ip_headers(buf: &mut [u8]) -> Option<(IpAddr, IpProtocol)> {
     if buf.is_empty() {
         return None;
     }
     match IpVersion::of_packet(buf).ok()? {
         #[cfg(feature = "ipv4")]
-        IpVersion::Ipv4 => {
+        IpVersion::V4 => {
             let packet = Ipv4Packet::new_checked(buf).ok()?;
             Some((packet.dst_addr().into(), packet.next_header()))
         }
         #[cfg(feature = "ipv6")]
-        IpVersion::Ipv6 => {
+        IpVersion::V6 => {
             let packet = Ipv6Packet::new_checked(buf).ok()?;
             Some((packet.dst_addr().into(), packet.next_header()))
         }
@@ -736,8 +736,8 @@ mod test {
     use crate::stack::Stack;
     use crate::test_device::{Sent, TestDevice};
     use crate::wire::{
-        ETHERNET_HEADER_LEN, EthernetAddress, HardwareAddress, IPV4_HEADER_LEN, IPV6_HEADER_LEN, IpCidr, Ipv4Address,
-        Ipv6Address,
+        ETHERNET_HEADER_LEN, EthernetAddress, HardwareAddress, IPV4_HEADER_LEN, IPV6_HEADER_LEN, IpCidr, Ipv4Addr,
+        Ipv6Addr,
     };
 
     fn add_test_iface(stack: &mut Stack, medium: Medium, ip_addrs: Vec<IpCidr>) -> (IfaceHandle, Sent) {
@@ -770,8 +770,8 @@ mod test {
             ip.set_total_len((IPV4_HEADER_LEN + payload.len()) as u16);
             ip.set_next_header(protocol);
             ip.set_hop_limit(64);
-            ip.set_src_addr(Ipv4Address::new(192, 168, 69, 1));
-            ip.set_dst_addr(Ipv4Address::new(192, 168, 69, 2));
+            ip.set_src_addr(Ipv4Addr::new(192, 168, 69, 1));
+            ip.set_dst_addr(Ipv4Addr::new(192, 168, 69, 2));
         }
         bytes[IPV4_HEADER_LEN..].copy_from_slice(payload);
         bytes
@@ -785,8 +785,8 @@ mod test {
             ip.set_payload_len(payload.len() as u16);
             ip.set_next_header(protocol);
             ip.set_hop_limit(64);
-            ip.set_src_addr(Ipv6Address::new(0xfdaa, 0, 0, 0, 0, 0, 0, 1));
-            ip.set_dst_addr(Ipv6Address::new(0xfdaa, 0, 0, 0, 0, 0, 0, 2));
+            ip.set_src_addr(Ipv6Addr::new(0xfdaa, 0, 0, 0, 0, 0, 0, 1));
+            ip.set_dst_addr(Ipv6Addr::new(0xfdaa, 0, 0, 0, 0, 0, 0, 2));
         }
         bytes[IPV6_HEADER_LEN..].copy_from_slice(payload);
         bytes
@@ -820,7 +820,7 @@ mod test {
         assert_eq!(socket.mode(), None);
 
         let mode = RawMode::Ip {
-            version: Some(IpVersion::Ipv4),
+            version: Some(IpVersion::V4),
             protocol: Some(IpProtocol::Icmp),
         };
         assert_eq!(socket.bind(mode), Ok(()));
@@ -983,7 +983,7 @@ mod test {
         stack
             .raw_socket(h_icmp)
             .bind(RawMode::Ip {
-                version: Some(IpVersion::Ipv4),
+                version: Some(IpVersion::V4),
                 protocol: Some(IpProtocol::Icmp),
             })
             .unwrap();
@@ -997,7 +997,7 @@ mod test {
 
         // Not a stack protocol: the first matching socket takes the buffer.
         let packet = ipv4_packet(IP_PROTO, b"abcd");
-        let res = stack.process_raw_ip(IfaceHandle::new(0), IpVersion::Ipv4, IP_PROTO, false, buf_from(&packet));
+        let res = stack.process_raw_ip(IfaceHandle::new(0), IpVersion::V4, IP_PROTO, false, buf_from(&packet));
         assert!(res.is_none());
         assert!(!stack.raw_socket(h_icmp).can_recv());
         assert_eq!(&*stack.raw_socket(h_any).recv().unwrap(), &packet[..]);
@@ -1007,7 +1007,7 @@ mod test {
         let packet = ipv4_packet(IpProtocol::Icmp, b"ping");
         let res = stack.process_raw_ip(
             IfaceHandle::new(0),
-            IpVersion::Ipv4,
+            IpVersion::V4,
             IpProtocol::Icmp,
             true,
             buf_from(&packet),
@@ -1022,7 +1022,7 @@ mod test {
         let packet = ipv6_packet(IpProtocol::Icmp, b"six");
         let res = stack.process_raw_ip(
             IfaceHandle::new(0),
-            IpVersion::Ipv6,
+            IpVersion::V6,
             IpProtocol::Icmp,
             false,
             buf_from(&packet),
@@ -1034,7 +1034,7 @@ mod test {
         // No socket matches: the buffer is handed back.
         stack.raw_socket(h_any).close();
         let packet = ipv4_packet(IP_PROTO, b"nobody");
-        let res = stack.process_raw_ip(IfaceHandle::new(0), IpVersion::Ipv4, IP_PROTO, false, buf_from(&packet));
+        let res = stack.process_raw_ip(IfaceHandle::new(0), IpVersion::V4, IP_PROTO, false, buf_from(&packet));
         let (res_buf, handled) = res.unwrap();
         assert_eq!(&*res_buf, &packet[..]);
         assert!(!handled);
@@ -1234,7 +1234,7 @@ mod test {
         stack
             .raw_socket(handle)
             .bind(RawMode::Ip {
-                version: Some(IpVersion::Ipv4),
+                version: Some(IpVersion::V4),
                 protocol: None,
             })
             .unwrap();
@@ -1251,7 +1251,7 @@ mod test {
         let (_iface, tx) = add_test_iface(
             &mut stack,
             Medium::Ip,
-            vec![IpCidr::new(IpAddress::v4(192, 168, 69, 1), 24)],
+            vec![IpCidr::new(IpAddr::v4(192, 168, 69, 1), 24)],
         );
         assert_eq!(stack.raw_socket(handle).send_slice(&packet), Ok(()));
         assert_eq!(*tx.borrow(), vec![packet.clone()]);
@@ -1281,15 +1281,11 @@ mod test {
     #[test]
     fn test_bind_to_iface_ip() {
         let mut stack = Stack::new(0x1234_5678_dead_beef);
-        let (if0, tx0) = add_test_iface(
-            &mut stack,
-            Medium::Ip,
-            vec![IpCidr::new(IpAddress::v4(10, 0, 0, 1), 24)],
-        );
+        let (if0, tx0) = add_test_iface(&mut stack, Medium::Ip, vec![IpCidr::new(IpAddr::v4(10, 0, 0, 1), 24)]);
         let (if1, tx1) = add_test_iface(
             &mut stack,
             Medium::Ip,
-            vec![IpCidr::new(IpAddress::v4(192, 168, 69, 1), 24)],
+            vec![IpCidr::new(IpAddr::v4(192, 168, 69, 1), 24)],
         );
 
         let handle = stack.add_raw_socket().unwrap();
@@ -1305,10 +1301,10 @@ mod test {
         // Ingress filter: a packet arriving on another interface is not
         // delivered, one on the bound interface is.
         let packet = ipv4_packet(IP_PROTO, b"abcd");
-        let res = stack.process_raw_ip(if0, IpVersion::Ipv4, IP_PROTO, false, buf_from(&packet));
+        let res = stack.process_raw_ip(if0, IpVersion::V4, IP_PROTO, false, buf_from(&packet));
         assert!(res.is_some_and(|(_, handled)| !handled));
         assert!(!stack.raw_socket(handle).can_recv());
-        let res = stack.process_raw_ip(if1, IpVersion::Ipv4, IP_PROTO, false, buf_from(&packet));
+        let res = stack.process_raw_ip(if1, IpVersion::V4, IP_PROTO, false, buf_from(&packet));
         assert!(res.is_none());
         assert_eq!(&*stack.raw_socket(handle).recv().unwrap(), &packet[..]);
 
@@ -1340,7 +1336,7 @@ mod test {
         let (_iface, tx) = add_test_iface(
             &mut stack,
             Medium::Ip,
-            vec![IpCidr::new(IpAddress::v4(192, 168, 69, 1), 24)],
+            vec![IpCidr::new(IpAddr::v4(192, 168, 69, 1), 24)],
         );
         let handle = stack.add_raw_socket().unwrap();
         stack

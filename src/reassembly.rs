@@ -224,8 +224,8 @@ impl<K: Eq + Copy> PacketAssemblerSet<K> {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) struct Ipv4FragKey {
     id: u16,
-    src_addr: Ipv4Address,
-    dst_addr: Ipv4Address,
+    src_addr: Ipv4Addr,
+    dst_addr: Ipv4Addr,
     protocol: IpProtocol,
 }
 

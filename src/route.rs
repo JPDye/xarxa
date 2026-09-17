@@ -21,16 +21,16 @@ use crate::storage::Vec;
 use crate::iface::IfaceHandle;
 use crate::stack::IfaceBinding;
 use crate::time::Instant;
-use crate::wire::{IpAddress, IpCidr};
+use crate::wire::{IpAddr, IpCidr};
 #[cfg(feature = "ipv4")]
-use crate::wire::{Ipv4Address, Ipv4Cidr};
+use crate::wire::{Ipv4Addr, Ipv4Cidr};
 #[cfg(feature = "ipv6")]
-use crate::wire::{Ipv6Address, Ipv6Cidr};
+use crate::wire::{Ipv6Addr, Ipv6Cidr};
 
 #[cfg(feature = "ipv4")]
-const IPV4_DEFAULT: IpCidr = IpCidr::Ipv4(Ipv4Cidr::new(Ipv4Address::new(0, 0, 0, 0), 0));
+const IPV4_DEFAULT: IpCidr = IpCidr::V4(Ipv4Cidr::new(Ipv4Addr::new(0, 0, 0, 0), 0));
 #[cfg(feature = "ipv6")]
-const IPV6_DEFAULT: IpCidr = IpCidr::Ipv6(Ipv6Cidr::new(Ipv6Address::new(0, 0, 0, 0, 0, 0, 0, 0), 0));
+const IPV6_DEFAULT: IpCidr = IpCidr::V6(Ipv6Cidr::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 0));
 
 /// Where a route came from.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -52,7 +52,7 @@ pub enum RouteOrigin {
 #[derive(Debug, Clone, Copy)]
 pub struct Route {
     pub cidr: IpCidr,
-    pub via_router: IpAddress,
+    pub via_router: IpAddr,
     /// The interface this route goes out of.
     pub iface: IfaceHandle,
     /// Where the route came from.
@@ -66,7 +66,7 @@ pub struct Route {
 impl Route {
     /// Returns a route to 0.0.0.0/0 via the `gateway`, out of `iface`, with no expiry.
     #[cfg(feature = "ipv4")]
-    pub fn new_ipv4_gateway(gateway: Ipv4Address, iface: IfaceHandle) -> Route {
+    pub fn new_ipv4_gateway(gateway: Ipv4Addr, iface: IfaceHandle) -> Route {
         Route {
             cidr: IPV4_DEFAULT,
             via_router: gateway.into(),
@@ -79,7 +79,7 @@ impl Route {
 
     /// Returns a route to ::/0 via the `gateway`, out of `iface`, with no expiry.
     #[cfg(feature = "ipv6")]
-    pub fn new_ipv6_gateway(gateway: Ipv6Address, iface: IfaceHandle) -> Route {
+    pub fn new_ipv6_gateway(gateway: Ipv6Addr, iface: IfaceHandle) -> Route {
         Route {
             cidr: IPV6_DEFAULT,
             via_router: gateway.into(),
@@ -170,7 +170,7 @@ impl Routes {
     /// - `Full` if the table has no room. Only possible without the `alloc`
     ///   feature, where the limit is [`ROUTE_COUNT`].
     #[cfg(feature = "ipv4")]
-    pub fn add_default_ipv4_route(&mut self, gateway: Ipv4Address, iface: IfaceHandle) -> Result<Option<Route>, Full> {
+    pub fn add_default_ipv4_route(&mut self, gateway: Ipv4Addr, iface: IfaceHandle) -> Result<Option<Route>, Full> {
         let old = self.remove_default_ipv4_route();
         // If the table is full here, `old` was `None` and nothing was lost.
         self.add(Route::new_ipv4_gateway(gateway, iface))?;
@@ -185,7 +185,7 @@ impl Routes {
     /// - `Full` if the table has no room. Only possible without the `alloc`
     ///   feature, where the limit is [`ROUTE_COUNT`].
     #[cfg(feature = "ipv6")]
-    pub fn add_default_ipv6_route(&mut self, gateway: Ipv6Address, iface: IfaceHandle) -> Result<Option<Route>, Full> {
+    pub fn add_default_ipv6_route(&mut self, gateway: Ipv6Addr, iface: IfaceHandle) -> Result<Option<Route>, Full> {
         let old = self.remove_default_ipv6_route();
         // If the table is full here, `old` was `None` and nothing was lost.
         self.add(Route::new_ipv6_gateway(gateway, iface))?;
@@ -224,7 +224,7 @@ impl Routes {
     /// A bound socket (`binding`) only considers routes that go out of its
     /// interface. Without the `iface-bind` feature the binding is always
     /// `Any` and the filter compiles out.
-    pub(crate) fn lookup(&self, binding: IfaceBinding, addr: &IpAddress, timestamp: Instant) -> Option<&Route> {
+    pub(crate) fn lookup(&self, binding: IfaceBinding, addr: &IpAddr, timestamp: Instant) -> Option<&Route> {
         assert!(addr.is_unicast());
 
         self.storage
@@ -262,21 +262,21 @@ mod test {
     const IF_0: IfaceHandle = IfaceHandle::new(0);
     const IF_1: IfaceHandle = IfaceHandle::new(1);
 
-    const ADDR_1A: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 2, 0, 0, 0, 1);
-    const ADDR_1B: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 2, 0, 0, 0, 13);
-    const ADDR_1C: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 2, 0, 0, 0, 42);
+    const ADDR_1A: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 2, 0, 0, 0, 1);
+    const ADDR_1B: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 2, 0, 0, 0, 13);
+    const ADDR_1C: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 2, 0, 0, 0, 42);
     fn cidr_1() -> Ipv6Cidr {
-        Ipv6Cidr::new(Ipv6Address::new(0xfe80, 0, 0, 2, 0, 0, 0, 0), 64)
+        Ipv6Cidr::new(Ipv6Addr::new(0xfe80, 0, 0, 2, 0, 0, 0, 0), 64)
     }
 
-    const ADDR_2A: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 0x3364, 0, 0, 0, 1);
-    const ADDR_2B: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 0x3364, 0, 0, 0, 21);
+    const ADDR_2A: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0x3364, 0, 0, 0, 1);
+    const ADDR_2B: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0x3364, 0, 0, 0, 21);
     fn cidr_2() -> Ipv6Cidr {
-        Ipv6Cidr::new(Ipv6Address::new(0xfe80, 0, 0, 0x3364, 0, 0, 0, 0), 64)
+        Ipv6Cidr::new(Ipv6Addr::new(0xfe80, 0, 0, 0x3364, 0, 0, 0, 0), 64)
     }
 
     /// Look up and return (via_router, iface).
-    fn lookup(routes: &Routes, addr: Ipv6Address, at_millis: i64) -> Option<(IpAddress, IfaceHandle)> {
+    fn lookup(routes: &Routes, addr: Ipv6Addr, at_millis: i64) -> Option<(IpAddr, IfaceHandle)> {
         routes
             .lookup(IfaceBinding::Any, &addr.into(), Instant::from_millis(at_millis))
             .map(|route| (route.via_router, route.iface))
@@ -404,8 +404,8 @@ mod test {
     #[test]
     fn test_default_route() {
         let mut routes = Routes::new();
-        let gw1 = Ipv4Address::new(192, 168, 1, 1);
-        let gw2 = Ipv4Address::new(192, 168, 1, 2);
+        let gw1 = Ipv4Addr::new(192, 168, 1, 1);
+        let gw2 = Ipv4Addr::new(192, 168, 1, 2);
 
         assert!(routes.get_default_ipv4_route().is_none());
         assert!(routes.add_default_ipv4_route(gw1, IF_0).unwrap().is_none());

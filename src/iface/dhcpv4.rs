@@ -27,8 +27,8 @@ use crate::stack::StackInner;
 use crate::time::{Duration, Instant};
 use crate::wire::{
     DHCP_CLIENT_PORT, DHCP_HEADER_LEN, DHCP_MAGIC_NUMBER, DHCP_SERVER_PORT, DhcpFlags, DhcpMessageType, DhcpOption,
-    DhcpPacket, EthernetAddress, IPV4_HEADER_LEN, IpAddress, IpCidr, Ipv4Address, Ipv4AddressExt, Ipv4Cidr,
-    LINK_HEADER_LEN, UDP_HEADER_LEN, UdpPacket, dhcpv4_field as field,
+    DhcpPacket, EthernetAddress, IPV4_HEADER_LEN, IpAddr, IpCidr, Ipv4Addr, Ipv4AddrExt, Ipv4Cidr, LINK_HEADER_LEN,
+    UDP_HEADER_LEN, UdpPacket, dhcpv4_field as field,
 };
 
 const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(120);
@@ -54,9 +54,9 @@ pub struct DhcpLease {
     /// The leased address and its subnet.
     pub address: Ipv4Cidr,
     /// The default gateway, if the server gave one.
-    pub router: Option<Ipv4Address>,
+    pub router: Option<Ipv4Addr>,
     /// The DNS servers, if the server gave any.
-    pub dns_servers: Vec<Ipv4Address, DHCP_MAX_DNS_SERVER_COUNT>,
+    pub dns_servers: Vec<Ipv4Addr, DHCP_MAX_DNS_SERVER_COUNT>,
     /// All options received from the DHCP server.
     ///
     /// You may have to ask the server to send the option you're interested in with [`DhcpConfig::parameter_request_list`].
@@ -69,10 +69,10 @@ pub struct DhcpLease {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct DhcpServerInfo {
     /// The address to send packets to.
-    pub address: Ipv4Address,
+    pub address: Ipv4Addr,
     /// The server identifier to put in packets. Usually the same as `address`,
     /// but can differ, for example behind a DHCP relay.
-    pub identifier: Ipv4Address,
+    pub identifier: Ipv4Addr,
 }
 
 /// The received options of a lease. See [`DhcpLease::options`].
@@ -183,7 +183,7 @@ struct RequestState {
     /// Server we're trying to request from
     server: DhcpServerInfo,
     /// IP address that we're trying to request.
-    requested_ip: Ipv4Address,
+    requested_ip: Ipv4Addr,
 }
 
 #[derive(Debug)]
@@ -452,12 +452,12 @@ impl Client {
         message_type: DhcpMessageType,
         transaction_id: u32,
         ethernet_addr: EthernetAddress,
-        client_ip: Ipv4Address,
-        requested_ip: Option<Ipv4Address>,
-        server_identifier: Option<Ipv4Address>,
+        client_ip: Ipv4Addr,
+        requested_ip: Option<Ipv4Addr>,
+        server_identifier: Option<Ipv4Addr>,
         ip_mtu: usize,
-        src_addr: Ipv4Address,
-        dst_addr: Ipv4Address,
+        src_addr: Ipv4Addr,
+        dst_addr: Ipv4Addr,
         checksum_caps: &ChecksumCapabilities,
     ) -> Option<PacketBuf> {
         // Worst case biggest IPv4 header length.
@@ -475,9 +475,9 @@ impl Client {
         packet.set_transaction_id(transaction_id);
         packet.set_flags(DhcpFlags::empty());
         packet.set_client_ip(client_ip);
-        packet.set_your_ip(Ipv4Address::UNSPECIFIED);
-        packet.set_server_ip(Ipv4Address::UNSPECIFIED);
-        packet.set_relay_agent_ip(Ipv4Address::UNSPECIFIED);
+        packet.set_your_ip(Ipv4Addr::UNSPECIFIED);
+        packet.set_server_ip(Ipv4Addr::UNSPECIFIED);
+        packet.set_relay_agent_ip(Ipv4Addr::UNSPECIFIED);
 
         let mut options = packet.options_mut();
         let client_id = {
@@ -535,7 +535,7 @@ impl Client {
         udp.set_dst_port(DHCP_SERVER_PORT);
         udp.set_len((UDP_HEADER_LEN + len) as u16);
         if !checksum_caps.udp.tx {
-            udp.fill_checksum(&IpAddress::Ipv4(src_addr), &IpAddress::Ipv4(dst_addr));
+            udp.fill_checksum(&IpAddr::V4(src_addr), &IpAddr::V4(dst_addr));
         } else {
             // A zero checksum means "no checksum" on UDP-over-IPv4, and is what a
             // device that computes it itself expects to find in the field.
@@ -549,7 +549,7 @@ impl Client {
 impl IfaceState<'_> {
     /// Process a DHCP packet received on this interface from `src_ip`. `payload` is
     /// the UDP payload, the ports have already been checked by the caller.
-    pub(crate) fn dhcpv4_process(&mut self, inner: &mut StackInner, src_ip: Ipv4Address, payload: &mut [u8]) {
+    pub(crate) fn dhcpv4_process(&mut self, inner: &mut StackInner, src_ip: Ipv4Addr, payload: &mut [u8]) {
         let ethernet_addr = self.hardware_addr;
         let Some(client) = &mut self.dhcpv4 else { return };
         let ethernet_addr = ethernet_addr.ethernet_or_panic();
@@ -672,7 +672,7 @@ impl IfaceState<'_> {
                     return;
                 }
 
-                debug!("DHCP send DISCOVER to {}", Ipv4Address::BROADCAST);
+                debug!("DHCP send DISCOVER to {}", Ipv4Addr::BROADCAST);
                 client.transaction_id = Client::random_transaction_id(inner);
                 state.retry_at = now + DISCOVER_TIMEOUT;
                 let buf = Client::build(
@@ -682,16 +682,16 @@ impl IfaceState<'_> {
                     DhcpMessageType::Discover,
                     client.transaction_id,
                     ethernet_addr,
-                    Ipv4Address::UNSPECIFIED,
+                    Ipv4Addr::UNSPECIFIED,
                     None,
                     None,
                     ip_mtu,
-                    Ipv4Address::UNSPECIFIED,
-                    Ipv4Address::BROADCAST,
+                    Ipv4Addr::UNSPECIFIED,
+                    Ipv4Addr::BROADCAST,
                     &checksum_caps,
                 );
                 if let Some(buf) = buf {
-                    inner.transmit_ipv4_on(self, Ipv4Address::UNSPECIFIED, Ipv4Address::BROADCAST, buf);
+                    inner.transmit_ipv4_on(self, Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST, buf);
                 }
             }
             ClientState::Requesting(state) => {
@@ -705,7 +705,7 @@ impl IfaceState<'_> {
                     return;
                 }
 
-                debug!("DHCP send request to {}", Ipv4Address::BROADCAST);
+                debug!("DHCP send request to {}", Ipv4Addr::BROADCAST);
                 // Exponential backoff: Double every 2 retries.
                 state.retry_at = now + INITIAL_REQUEST_TIMEOUT * (1u32 << (state.retry as u32 / 2));
                 state.retry += 1;
@@ -716,16 +716,16 @@ impl IfaceState<'_> {
                     DhcpMessageType::Request,
                     client.transaction_id,
                     ethernet_addr,
-                    Ipv4Address::UNSPECIFIED,
+                    Ipv4Addr::UNSPECIFIED,
                     Some(state.requested_ip),
                     Some(state.server.identifier),
                     ip_mtu,
-                    Ipv4Address::UNSPECIFIED,
-                    Ipv4Address::BROADCAST,
+                    Ipv4Addr::UNSPECIFIED,
+                    Ipv4Addr::BROADCAST,
                     &checksum_caps,
                 );
                 if let Some(buf) = buf {
-                    inner.transmit_ipv4_on(self, Ipv4Address::UNSPECIFIED, Ipv4Address::BROADCAST, buf);
+                    inner.transmit_ipv4_on(self, Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST, buf);
                 }
             }
             ClientState::Renewing(state) => {
@@ -744,7 +744,7 @@ impl IfaceState<'_> {
                 let src_addr = state.lease.address.address();
                 // Renewing is unicast to the original server, rebinding is broadcast
                 let dst_addr = if state.rebinding {
-                    Ipv4Address::BROADCAST
+                    Ipv4Addr::BROADCAST
                 } else {
                     state.lease.server.address
                 };
@@ -808,8 +808,8 @@ impl IfaceState<'_> {
     ///
     /// Addresses and routes that are not part of the old lease are left alone.
     fn dhcpv4_apply(&mut self, inner: &mut StackInner, new: Option<&DhcpLease>, old: Option<&DhcpLease>) {
-        let old_addr = old.map(|l| IpCidr::Ipv4(l.address));
-        let new_addr = new.map(|l| IpCidr::Ipv4(l.address));
+        let old_addr = old.map(|l| IpCidr::V4(l.address));
+        let new_addr = new.map(|l| IpCidr::V4(l.address));
         if old_addr != new_addr {
             self.ip_addrs.retain(|a| a.origin != AddrOrigin::Dhcpv4);
             if let Some(cidr) = new_addr {
@@ -847,9 +847,9 @@ impl IfaceState<'_> {
     }
 }
 
-fn parse_ipv4(data: &[u8]) -> Option<Ipv4Address> {
+fn parse_ipv4(data: &[u8]) -> Option<Ipv4Addr> {
     let octets: [u8; 4] = data.get(..4)?.try_into().ok()?;
-    Some(Ipv4Address::from_octets(octets))
+    Some(Ipv4Addr::from_octets(octets))
 }
 
 fn parse_u32(data: &[u8]) -> Option<u32> {
@@ -873,9 +873,9 @@ mod test {
 
     const OUR_HW: EthernetAddress = EthernetAddress([0x02, 0, 0, 0, 0, 0x01]);
     const SERVER_HW: EthernetAddress = EthernetAddress([0x02, 0, 0, 0, 0, 0x02]);
-    const SERVER_IP: Ipv4Address = Ipv4Address::new(192, 168, 1, 1);
-    const OFFERED_IP: Ipv4Address = Ipv4Address::new(192, 168, 1, 50);
-    const DNS_IP: Ipv4Address = Ipv4Address::new(1, 1, 1, 1);
+    const SERVER_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
+    const OFFERED_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 50);
+    const DNS_IP: Ipv4Addr = Ipv4Addr::new(1, 1, 1, 1);
     const XID: u32 = 0x12345678;
     const IFACE: IfaceHandle = IfaceHandle::new(0);
 
@@ -910,7 +910,7 @@ mod test {
     }
 
     /// A server reply as a whole Ethernet frame, unicast to our MAC and to `dst_ip`.
-    fn reply(message_type: DhcpMessageType, xid: u32, dst_ip: Ipv4Address, options: &[DhcpOption<'_>]) -> Vec<u8> {
+    fn reply(message_type: DhcpMessageType, xid: u32, dst_ip: Ipv4Addr, options: &[DhcpOption<'_>]) -> Vec<u8> {
         let mut dhcp = vec![0; 576];
         let dhcp_len = {
             let mut packet = DhcpPacket::new_unchecked(&mut dhcp);
@@ -918,14 +918,14 @@ mod test {
             packet.set_opcode(DhcpOpCode::Reply);
             packet.set_transaction_id(xid);
             packet.set_flags(DhcpFlags::empty());
-            packet.set_client_ip(Ipv4Address::UNSPECIFIED);
+            packet.set_client_ip(Ipv4Addr::UNSPECIFIED);
             packet.set_your_ip(if message_type == DhcpMessageType::Nak {
-                Ipv4Address::UNSPECIFIED
+                Ipv4Addr::UNSPECIFIED
             } else {
                 OFFERED_IP
             });
             packet.set_server_ip(SERVER_IP);
-            packet.set_relay_agent_ip(Ipv4Address::UNSPECIFIED);
+            packet.set_relay_agent_ip(Ipv4Addr::UNSPECIFIED);
             let mut writer = packet.options_mut();
             writer
                 .emit(DhcpOption {
@@ -971,7 +971,7 @@ mod test {
             udp.set_dst_port(DHCP_CLIENT_PORT);
             udp.set_len((UDP_HEADER_LEN + dhcp_len) as u16);
             udp.payload_mut().copy_from_slice(&dhcp);
-            udp.fill_checksum(&IpAddress::Ipv4(SERVER_IP), &IpAddress::Ipv4(dst_ip));
+            udp.fill_checksum(&IpAddr::V4(SERVER_IP), &IpAddr::V4(dst_ip));
         }
         frame
     }
@@ -1000,8 +1000,8 @@ mod test {
 
     /// What a transmitted frame is: the IP addresses, the UDP ports, and the DHCP payload.
     struct SentDhcp {
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
+        src_ip: Ipv4Addr,
+        dst_ip: Ipv4Addr,
         dst_hw: EthernetAddress,
         dhcp: Vec<u8>,
     }
@@ -1017,7 +1017,7 @@ mod test {
         assert_eq!(ip.next_header(), IpProtocol::Udp);
         let (src_ip, dst_ip) = (ip.src_addr(), ip.dst_addr());
         let udp = UdpPacket::new_checked(&mut frame[ETHERNET_HEADER_LEN + IPV4_HEADER_LEN..]).unwrap();
-        assert!(udp.verify_checksum(&IpAddress::Ipv4(src_ip), &IpAddress::Ipv4(dst_ip)));
+        assert!(udp.verify_checksum(&IpAddr::V4(src_ip), &IpAddr::V4(dst_ip)));
         assert_eq!(udp.src_port(), DHCP_CLIENT_PORT);
         assert_eq!(udp.dst_port(), DHCP_SERVER_PORT);
         SentDhcp {
@@ -1053,8 +1053,8 @@ mod test {
         assert_eq!(deadline, at(10));
         assert_eq!(tx.borrow().len(), 1);
         let mut sent = parse_sent(&tx.borrow()[0]);
-        assert_eq!(sent.src_ip, Ipv4Address::UNSPECIFIED);
-        assert_eq!(sent.dst_ip, Ipv4Address::BROADCAST);
+        assert_eq!(sent.src_ip, Ipv4Addr::UNSPECIFIED);
+        assert_eq!(sent.dst_ip, Ipv4Addr::BROADCAST);
         assert_eq!(sent.dst_hw, EthernetAddress::BROADCAST);
         assert_eq!(message_type(&mut sent), DhcpMessageType::Discover);
         {
@@ -1074,8 +1074,8 @@ mod test {
         stack.poll(at(1));
         assert_eq!(tx.borrow().len(), 2);
         let mut sent = parse_sent(&tx.borrow()[1]);
-        assert_eq!(sent.src_ip, Ipv4Address::UNSPECIFIED);
-        assert_eq!(sent.dst_ip, Ipv4Address::BROADCAST);
+        assert_eq!(sent.src_ip, Ipv4Addr::UNSPECIFIED);
+        assert_eq!(sent.dst_ip, Ipv4Addr::BROADCAST);
         assert_eq!(message_type(&mut sent), DhcpMessageType::Request);
         {
             let packet = DhcpPacket::new_checked(&mut sent.dhcp).unwrap();
@@ -1109,7 +1109,7 @@ mod test {
             }]
         );
         let route = stack.routes().get_default_ipv4_route().unwrap();
-        assert_eq!(route.via_router, IpAddress::Ipv4(SERVER_IP));
+        assert_eq!(route.via_router, IpAddr::V4(SERVER_IP));
         assert_eq!(route.iface, IFACE);
         assert_eq!(route.origin, RouteOrigin::Dhcpv4);
         assert_ne!(stack.iface(IFACE).config_generation(), generation);
@@ -1123,7 +1123,7 @@ mod test {
             .iface(IFACE)
             .ip_addrs()
             .iter()
-            .filter(|a| matches!(a.cidr, IpCidr::Ipv4(_)))
+            .filter(|a| matches!(a.cidr, IpCidr::V4(_)))
             .copied()
             .collect()
     }
@@ -1193,7 +1193,7 @@ mod test {
     #[test]
     fn test_manual_config_left_alone() {
         let (mut stack, _rx, _tx) = bound_stack();
-        let manual = IpCidr::new(Ipv4Address::new(10, 0, 0, 1).into(), 8);
+        let manual = IpCidr::new(Ipv4Addr::new(10, 0, 0, 1).into(), 8);
         stack.iface(IFACE).add_ip_addr(manual).unwrap();
 
         stack.iface(IFACE).set_dhcpv4(None).unwrap();
@@ -1257,7 +1257,7 @@ mod test {
         }
         let sent = parse_sent(tx.borrow().last().unwrap());
         assert_eq!(sent.src_ip, OFFERED_IP);
-        assert_eq!(sent.dst_ip, Ipv4Address::BROADCAST);
+        assert_eq!(sent.dst_ip, Ipv4Addr::BROADCAST);
         assert!(stack.iface(IFACE).dhcpv4_lease().is_some());
     }
 
@@ -1277,7 +1277,7 @@ mod test {
         assert!(stack.routes().get_default_ipv4_route().is_none());
         let mut sent = parse_sent(tx.borrow().last().unwrap());
         assert_eq!(message_type(&mut sent), DhcpMessageType::Discover);
-        assert_eq!(sent.src_ip, Ipv4Address::UNSPECIFIED);
+        assert_eq!(sent.src_ip, Ipv4Addr::UNSPECIFIED);
     }
 
     #[test]

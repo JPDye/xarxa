@@ -4,7 +4,7 @@ use core::fmt;
 
 use super::{Result, take};
 use crate::error::Malformed;
-use crate::wire::Ipv6Address;
+use crate::wire::Ipv6Addr;
 
 open_enum! {
     /// IEEE 802.15.4 frame type.
@@ -157,13 +157,13 @@ impl Address {
     /// Convert an extended address to a link-local IPv6 address (RFC 4944 §6).
     ///
     /// Returns `None` for short and absent addresses.
-    pub fn as_link_local_address(&self) -> Option<Ipv6Address> {
+    pub fn as_link_local_address(&self) -> Option<Ipv6Addr> {
         let mut bytes = [0; 16];
         bytes[0] = 0xfe;
         bytes[1] = 0x80;
         bytes[8..].copy_from_slice(&self.as_eui_64()?);
 
-        Some(Ipv6Address::from_octets(bytes))
+        Some(Ipv6Addr::from_octets(bytes))
     }
 }
 

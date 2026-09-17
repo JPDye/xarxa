@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use byteorder::{ByteOrder, NetworkEndian};
 
 use crate::time::Duration;
-use crate::wire::Ipv6Address;
+use crate::wire::Ipv6Addr;
 use crate::wire::icmpv6::{Packet, field};
 
 bitflags! {
@@ -67,8 +67,8 @@ impl<'a> Packet<'a> {
 impl<'a> Packet<'a> {
     /// Return the target address field.
     #[inline]
-    pub fn target_addr(&self) -> Ipv6Address {
-        Ipv6Address::from_octets(self.buffer[field::TARGET_ADDR].try_into().unwrap())
+    pub fn target_addr(&self) -> Ipv6Addr {
+        Ipv6Addr::from_octets(self.buffer[field::TARGET_ADDR].try_into().unwrap())
     }
 }
 
@@ -91,8 +91,8 @@ impl<'a> Packet<'a> {
 impl<'a> Packet<'a> {
     /// Return the destination address field.
     #[inline]
-    pub fn dest_addr(&self) -> Ipv6Address {
-        Ipv6Address::from_octets(self.buffer[field::DEST_ADDR].try_into().unwrap())
+    pub fn dest_addr(&self) -> Ipv6Addr {
+        Ipv6Addr::from_octets(self.buffer[field::DEST_ADDR].try_into().unwrap())
     }
 }
 
@@ -141,7 +141,7 @@ impl<'a> Packet<'a> {
 impl<'a> Packet<'a> {
     /// Set the target address field.
     #[inline]
-    pub fn set_target_addr(&mut self, value: Ipv6Address) {
+    pub fn set_target_addr(&mut self, value: Ipv6Addr) {
         self.buffer[field::TARGET_ADDR].copy_from_slice(&value.octets());
     }
 }
@@ -165,7 +165,7 @@ impl<'a> Packet<'a> {
 impl<'a> Packet<'a> {
     /// Set the destination address field.
     #[inline]
-    pub fn set_dest_addr(&mut self, value: Ipv6Address) {
+    pub fn set_dest_addr(&mut self, value: Ipv6Addr) {
         self.buffer[field::DEST_ADDR].copy_from_slice(&value.octets());
     }
 }

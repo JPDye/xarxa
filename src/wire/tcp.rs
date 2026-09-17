@@ -4,7 +4,7 @@ use core::{cmp, fmt, ops};
 use super::Result;
 use crate::error::Malformed;
 use crate::wire::ip::checksum;
-use crate::wire::{IpAddress, IpProtocol};
+use crate::wire::{IpAddr, IpProtocol};
 
 /// A TCP sequence number.
 ///
@@ -281,7 +281,7 @@ impl<'a> Packet<'a> {
     ///
     /// # Fuzzing
     /// This function always returns `true` when fuzzing.
-    pub fn verify_checksum(&self, src_addr: &IpAddress, dst_addr: &IpAddress) -> bool {
+    pub fn verify_checksum(&self, src_addr: &IpAddr, dst_addr: &IpAddr) -> bool {
         if cfg!(fuzzing) {
             return true;
         }
@@ -430,7 +430,7 @@ impl<'a> Packet<'a> {
     /// # Panics
     /// This function panics unless `src_addr` and `dst_addr` belong to the same family,
     /// and that family is IPv4 or IPv6.
-    pub fn fill_checksum(&mut self, src_addr: &IpAddress, dst_addr: &IpAddress) {
+    pub fn fill_checksum(&mut self, src_addr: &IpAddr, dst_addr: &IpAddr) {
         self.set_checksum(0);
         let checksum = {
             let data = &self.buffer[..];
@@ -658,10 +658,10 @@ impl Control {
 #[cfg(all(test, feature = "ipv4"))]
 mod test {
     use super::*;
-    use crate::wire::Ipv4Address;
+    use crate::wire::Ipv4Addr;
 
-    const SRC_ADDR: Ipv4Address = Ipv4Address::new(192, 168, 1, 1);
-    const DST_ADDR: Ipv4Address = Ipv4Address::new(192, 168, 1, 2);
+    const SRC_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
+    const DST_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 2);
 
     static PACKET_BYTES: [u8; 28] = [
         0xbf, 0x00, 0x00, 0x50, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x60, 0x35, 0x01, 0x23, 0x01, 0xb6,

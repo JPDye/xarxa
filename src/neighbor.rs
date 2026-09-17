@@ -8,11 +8,11 @@ use crate::driver::PacketBuf;
 use crate::error::NotUnicast;
 use crate::iface::IfaceHandle;
 use crate::time::{Duration, Instant};
-use crate::wire::{HardwareAddress, IpAddress};
+use crate::wire::{HardwareAddress, IpAddr};
 
 /// Key identifying a neighbor: the interface it is reachable through, plus its
 /// protocol address.
-pub(crate) type Key = (IfaceHandle, IpAddress);
+pub(crate) type Key = (IfaceHandle, IpAddr);
 
 // Maximum number of entries in the neighbor cache, and maximum number of packets
 // waiting for neighbor resolution (when full, the oldest packet is dropped to
@@ -93,10 +93,10 @@ impl Answer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProbeEvent {
     /// Another solicitation should be sent to the neighbor.
-    Retransmit(IpAddress),
+    Retransmit(IpAddr),
     /// Resolution failed after the maximum number of solicitations. The entry has
     /// been removed; packets queued on it should be dropped.
-    Failed(IpAddress),
+    Failed(IpAddr),
 }
 
 /// An entry in the [`NeighborCache`].
@@ -106,7 +106,7 @@ pub struct Neighbor {
     /// Interface the neighbor is reachable through.
     pub iface: IfaceHandle,
     /// The neighbor's IP address.
-    pub addr: IpAddress,
+    pub addr: IpAddr,
     /// Whether the hardware address is known yet.
     pub state: NeighborState,
 }
@@ -291,7 +291,7 @@ impl NeighborCache {
     ///
     /// Expired entries are still reported until the stack reuses their slot.
     /// Compare `expires_at` against the current time if that matters.
-    pub fn get(&self, iface: IfaceHandle, addr: IpAddress) -> Option<Neighbor> {
+    pub fn get(&self, iface: IfaceHandle, addr: IpAddr) -> Option<Neighbor> {
         let state = self.get_state(&(iface, addr))?;
         Some(Neighbor {
             iface,
@@ -324,7 +324,7 @@ impl NeighborCache {
     pub fn insert(
         &mut self,
         iface: IfaceHandle,
-        addr: IpAddress,
+        addr: IpAddr,
         hardware_addr: HardwareAddress,
         expires_at: Instant,
     ) -> Result<(), NotUnicast> {
@@ -341,7 +341,7 @@ impl NeighborCache {
     /// Removing an entry whose resolution is still in progress leaves the
     /// packets parked on it waiting: they are dropped when their own timeout
     /// expires, a few seconds later.
-    pub fn remove(&mut self, iface: IfaceHandle, addr: IpAddress) -> Option<Neighbor> {
+    pub fn remove(&mut self, iface: IfaceHandle, addr: IpAddr) -> Option<Neighbor> {
         let index = self.storage.iter().position(|(key, _)| *key == (iface, addr))?;
         let ((iface, addr), state) = self.storage.swap_remove(index);
         Some(Neighbor {
@@ -526,7 +526,7 @@ impl PendingQueue {
 mod test {
     use super::*;
     use crate::iface::IfaceHandle;
-    use crate::wire::Ipv6Address;
+    use crate::wire::Ipv6Addr;
     use crate::wire::ipv6::test::{MOCK_IP_ADDR_1, MOCK_IP_ADDR_2, MOCK_IP_ADDR_3, MOCK_IP_ADDR_4};
     #[allow(unused_imports)]
     use std::vec::Vec;
@@ -571,13 +571,13 @@ mod test {
     #[test]
     fn insert_rejects_non_unicast() {
         let mut cache = NeighborCache::new();
-        let all_nodes = Ipv6Address::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
+        let all_nodes = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
         assert_eq!(
             cache.insert(IF_0, all_nodes.into(), HADDR_A, Instant::MAX),
             Err(NotUnicast)
         );
         assert_eq!(
-            cache.insert(IF_0, Ipv6Address::UNSPECIFIED.into(), HADDR_A, Instant::MAX),
+            cache.insert(IF_0, Ipv6Addr::UNSPECIFIED.into(), HADDR_A, Instant::MAX),
             Err(NotUnicast)
         );
         #[cfg(feature = "medium-ethernet")]
@@ -607,7 +607,7 @@ mod test {
     const HADDR_C: HardwareAddress = haddr(3);
     const HADDR_D: HardwareAddress = haddr(4);
 
-    fn key(addr: Ipv6Address) -> Key {
+    fn key(addr: Ipv6Addr) -> Key {
         (IF_0, addr.into())
     }
 
@@ -697,7 +697,7 @@ mod test {
             let mut addr = MOCK_IP_ADDR_3.octets();
             addr[14] = 1;
             addr[15] = i as u8;
-            cache.fill(key(Ipv6Address::from(addr)), HADDR_C, Instant::from_millis(200));
+            cache.fill(key(Ipv6Addr::from(addr)), HADDR_C, Instant::from_millis(200));
         }
         assert_eq!(
             cache.lookup(&key(MOCK_IP_ADDR_2), Instant::from_millis(1000)),

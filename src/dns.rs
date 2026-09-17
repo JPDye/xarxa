@@ -23,7 +23,7 @@ use crate::stack::Stack;
 use crate::time::{Duration, Instant};
 use crate::udp::{RecvError, SendError, UdpHandle};
 use crate::wire::dns::{Flags, HEADER_LEN, Opcode, Packet, Question, Rcode, Record, RecordData, Type};
-use crate::wire::{self, IpAddress, IpEndpoint, IpListenEndpoint};
+use crate::wire::{self, IpAddr, ListenSocketAddr, SocketAddr};
 
 #[cfg(feature = "async")]
 use crate::waker::WakerRegistration;
@@ -35,10 +35,10 @@ const MAX_RETRANSMIT_DELAY: Duration = Duration::from_millis(10_000);
 const RETRANSMIT_TIMEOUT: Duration = Duration::from_millis(10_000); // Should generally be 2-10 secs
 
 #[cfg(all(feature = "mdns", feature = "ipv6"))]
-const MDNS_IPV6_ADDR: IpAddress = IpAddress::Ipv6(crate::wire::Ipv6Address::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb));
+const MDNS_IPV6_ADDR: IpAddr = IpAddr::V6(crate::wire::Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb));
 
 #[cfg(all(feature = "mdns", feature = "ipv4"))]
-const MDNS_IPV4_ADDR: IpAddress = IpAddress::Ipv4(crate::wire::Ipv4Address::new(224, 0, 0, 251));
+const MDNS_IPV4_ADDR: IpAddr = IpAddr::V4(crate::wire::Ipv4Addr::new(224, 0, 0, 251));
 
 /// Error returned by [`DnsClient::start_query`].
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -139,7 +139,7 @@ pub enum MulticastDns {
 
 #[derive(Debug)]
 struct CompletedQuery {
-    addresses: Vec<IpAddress, DNS_MAX_RESULT_COUNT>,
+    addresses: Vec<IpAddr, DNS_MAX_RESULT_COUNT>,
 }
 
 define_handle! {
@@ -154,7 +154,7 @@ define_handle! {
 #[derive(Debug)]
 pub struct DnsClient {
     socket: UdpHandle,
-    servers: Vec<IpAddress, DNS_MAX_SERVER_COUNT>,
+    servers: Vec<IpAddr, DNS_MAX_SERVER_COUNT>,
     queries: Slab<DnsQuery, DNS_MAX_QUERY_COUNT>,
 }
 
@@ -166,13 +166,13 @@ impl DnsClient {
     ///
     /// Errors:
     /// - `Full` if the stack has no room for another UDP socket.
-    pub fn new(stack: &mut Stack, servers: &[IpAddress]) -> core::result::Result<DnsClient, Full> {
+    pub fn new(stack: &mut Stack, servers: &[IpAddr]) -> core::result::Result<DnsClient, Full> {
         let truncated_servers = &servers[..min(servers.len(), DNS_MAX_SERVER_COUNT)];
 
         let socket = stack.add_udp_socket()?;
         // A fresh socket on an ephemeral port: can only fail if the whole
         // ephemeral range is taken.
-        unwrap!(stack.udp_socket(socket).bind(0, IpListenEndpoint::UNSPECIFIED));
+        unwrap!(stack.udp_socket(socket).bind(0, ListenSocketAddr::UNSPECIFIED));
 
         Ok(DnsClient {
             socket,
@@ -198,7 +198,7 @@ impl DnsClient {
     /// Update the list of DNS servers, will replace all existing servers
     ///
     /// Truncates the server list if `servers.len() > DNS_MAX_SERVER_COUNT`.
-    pub fn update_servers(&mut self, servers: &[IpAddress]) {
+    pub fn update_servers(&mut self, servers: &[IpAddr]) {
         if servers.len() > DNS_MAX_SERVER_COUNT {
             trace!("Max DNS Servers exceeded. Increase DNS_MAX_SERVER_COUNT");
             self.servers = Vec::from_slice(&servers[..DNS_MAX_SERVER_COUNT]).unwrap();
@@ -306,7 +306,7 @@ impl DnsClient {
     pub fn get_query_result(
         &mut self,
         handle: DnsQueryHandle,
-    ) -> Result<Vec<IpAddress, DNS_MAX_RESULT_COUNT>, GetQueryResultError> {
+    ) -> Result<Vec<IpAddr, DNS_MAX_RESULT_COUNT>, GetQueryResultError> {
         let q = self.queries.get_mut(handle.index());
         match &mut q.state {
             // Query is not done yet.
@@ -357,7 +357,7 @@ impl DnsClient {
         self.dispatch(stack)
     }
 
-    fn accepts(&self, remote: IpEndpoint) -> bool {
+    fn accepts(&self, remote: SocketAddr) -> bool {
         (remote.port == DNS_PORT && self.servers.contains(&remote.addr)) || (remote.port == MDNS_DNS_PORT)
     }
 
@@ -600,7 +600,7 @@ impl DnsClient {
                     MulticastDns::Disabled => DNS_PORT,
                 };
 
-                let dst = IpEndpoint::new(servers[pq.server_idx], dst_port);
+                let dst = SocketAddr::new(servers[pq.server_idx], dst_port);
 
                 trace!("sending {} octets to {}", payload.len(), dst);
 

@@ -6,9 +6,9 @@ use core::iter::Iterator;
 use super::Result;
 use crate::error::Malformed;
 #[cfg(feature = "ipv4")]
-use crate::wire::Ipv4Address;
+use crate::wire::Ipv4Addr;
 #[cfg(feature = "ipv6")]
-use crate::wire::Ipv6Address;
+use crate::wire::Ipv6Addr;
 
 open_enum! {
     /// DNS opcode.
@@ -375,11 +375,11 @@ impl<'a> RecordData<'a> {
     pub fn parse(type_: Type, data: &'a [u8]) -> Result<RecordData<'a>> {
         match type_ {
             #[cfg(feature = "ipv4")]
-            Type::A => Ok(RecordData::A(Ipv4Address::from(
+            Type::A => Ok(RecordData::A(Ipv4Addr::from(
                 <[u8; 4]>::try_from(data).map_err(|_| Malformed)?,
             ))),
             #[cfg(feature = "ipv6")]
-            Type::Aaaa => Ok(RecordData::Aaaa(Ipv6Address::from(
+            Type::Aaaa => Ok(RecordData::Aaaa(Ipv6Addr::from(
                 <[u8; 16]>::try_from(data).map_err(|_| Malformed)?,
             ))),
             Type::Cname => Ok(RecordData::Cname(data)),
@@ -394,10 +394,10 @@ impl<'a> RecordData<'a> {
 pub enum RecordData<'a> {
     /// An IPv4 address.
     #[cfg(feature = "ipv4")]
-    A(Ipv4Address),
+    A(Ipv4Addr),
     /// An IPv6 address.
     #[cfg(feature = "ipv6")]
-    Aaaa(Ipv6Address),
+    Aaaa(Ipv6Addr),
     /// A canonical name, in wire format. May contain compression pointers.
     Cname(&'a [u8]),
     /// Any other record type, with its raw data.
@@ -596,10 +596,7 @@ mod test {
 
         assert_eq!(p.answers[0].name, &[0xc0, 0x0c]);
         assert_eq!(p.answers[0].ttl, 202);
-        assert_eq!(
-            p.answers[0].data,
-            RecordData::A(Ipv4Address::new(0xac, 0xd9, 0xa8, 0xae))
-        );
+        assert_eq!(p.answers[0].data, RecordData::A(Ipv4Addr::new(0xac, 0xd9, 0xa8, 0xae)));
     }
 
     #[test]
@@ -637,10 +634,7 @@ mod test {
         for (i, last) in [0x35, 0x28, 0x43, 0x62].into_iter().enumerate() {
             assert_eq!(p.answers[i].name, &[0xc0, 0x0c]);
             assert_eq!(p.answers[i].ttl, 9);
-            assert_eq!(
-                p.answers[i].data,
-                RecordData::A(Ipv4Address::new(0x0d, 0xe0, 0x77, last))
-            );
+            assert_eq!(p.answers[i].data, RecordData::A(Ipv4Addr::new(0x0d, 0xe0, 0x77, last)));
         }
     }
 
@@ -688,10 +682,7 @@ mod test {
         // a
         assert_eq!(p.answers[1].name, &[0xc0, 0x2e]);
         assert_eq!(p.answers[1].ttl, 5);
-        assert_eq!(
-            p.answers[1].data,
-            RecordData::A(Ipv4Address::new(0x1f, 0x0d, 0x53, 0x24))
-        );
+        assert_eq!(p.answers[1].data, RecordData::A(Ipv4Addr::new(0x1f, 0x0d, 0x53, 0x24)));
     }
 
     #[test]

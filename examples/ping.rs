@@ -35,7 +35,7 @@ use xarxa::raw::RawMode;
 use xarxa::time::{Duration, Instant};
 use xarxa::wire::{
     EthernetAddress, HardwareAddress, IPV4_HEADER_LEN, IPV6_HEADER_LEN, Icmpv4Message, Icmpv4Packet, Icmpv6Message,
-    Icmpv6Packet, IpAddress, IpCidr, IpProtocol, Ipv4Address, Ipv4Packet, Ipv6Address, Ipv6Packet,
+    Icmpv6Packet, IpAddr, IpCidr, IpProtocol, Ipv4Addr, Ipv4Packet, Ipv6Addr, Ipv6Packet,
 };
 
 /// ICMP echo header (type, code, checksum, ident, seq).
@@ -55,10 +55,10 @@ fn main() {
         HardwareAddress::Ethernet(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]))
     };
     let name = args.first().map(String::as_str).unwrap_or("tap0");
-    let target: IpAddress = args
+    let target: IpAddr = args
         .get(1)
         .map(|s| s.parse::<std::net::IpAddr>().expect("invalid target address").into())
-        .unwrap_or(IpAddress::v4(192, 168, 69, 100));
+        .unwrap_or(IpAddr::v4(192, 168, 69, 100));
 
     let driver = TunTapDriver::new(name, hardware_addr).unwrap();
     let fd = driver.as_raw_fd();
@@ -69,20 +69,20 @@ fn main() {
     stack
         .iface(iface)
         .set_ip_addrs([
-            IpCidr::new(IpAddress::v4(192, 168, 69, 1), 24),
-            IpCidr::new(IpAddress::v6(0xfdaa, 0, 0, 0, 0, 0, 0, 1), 64),
-            IpCidr::new(IpAddress::v6(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64),
+            IpCidr::new(IpAddr::v4(192, 168, 69, 1), 24),
+            IpCidr::new(IpAddr::v6(0xfdaa, 0, 0, 0, 0, 0, 0, 1), 64),
+            IpCidr::new(IpAddr::v6(0xfe80, 0, 0, 0, 0, 0, 0, 1), 64),
         ])
         .unwrap();
 
     // Off-link traffic routes to the host's addresses on this interface.
     stack
         .routes_mut()
-        .add_default_ipv4_route(Ipv4Address::new(192, 168, 69, 100), iface)
+        .add_default_ipv4_route(Ipv4Addr::new(192, 168, 69, 100), iface)
         .unwrap();
     stack
         .routes_mut()
-        .add_default_ipv6_route(Ipv6Address::new(0xfdaa, 0, 0, 0, 0, 0, 0, 0x100), iface)
+        .add_default_ipv6_route(Ipv6Addr::new(0xfdaa, 0, 0, 0, 0, 0, 0, 0x100), iface)
         .unwrap();
 
     // A raw socket in IP mode carries whole IP packets, headers included, in
@@ -91,8 +91,8 @@ fn main() {
     // ICMP flavor of the target's IP version. The stack processes ICMP itself
     // too, so the socket sees a copy of each matching ingress packet.
     let protocol = match target {
-        IpAddress::Ipv4(_) => IpProtocol::Icmp,
-        IpAddress::Ipv6(_) => IpProtocol::Icmpv6,
+        IpAddr::V4(_) => IpProtocol::Icmp,
+        IpAddr::V6(_) => IpProtocol::Icmpv6,
     };
     let handle = stack.add_raw_socket().unwrap();
     stack
@@ -154,10 +154,10 @@ fn main() {
 }
 
 /// Build and send one echo request.
-fn send_request(socket: &mut xarxa::raw::RawSocket<'_, '_>, target: IpAddress, ident: u16, seq: u16, now: Instant) {
+fn send_request(socket: &mut xarxa::raw::RawSocket<'_, '_>, target: IpAddr, ident: u16, seq: u16, now: Instant) {
     let res = match target {
-        IpAddress::Ipv4(dst) => {
-            let src = Ipv4Address::new(192, 168, 69, 1);
+        IpAddr::V4(dst) => {
+            let src = Ipv4Addr::new(192, 168, 69, 1);
             let total = IPV4_HEADER_LEN + ICMP_HEADER_LEN + DATA_LEN;
             socket.send_with(total, |buf| {
                 buf.fill(0);
@@ -180,12 +180,12 @@ fn send_request(socket: &mut xarxa::raw::RawSocket<'_, '_>, target: IpAddress, i
                 total
             })
         }
-        IpAddress::Ipv6(dst) => {
+        IpAddr::V6(dst) => {
             // Replies to a link-local target must come from our link-local address.
             let src = if dst.segments()[0] & 0xffc0 == 0xfe80 {
-                Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)
+                Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)
             } else {
-                Ipv6Address::new(0xfdaa, 0, 0, 0, 0, 0, 0, 1)
+                Ipv6Addr::new(0xfdaa, 0, 0, 0, 0, 0, 0, 1)
             };
             let total = IPV6_HEADER_LEN + ICMP_HEADER_LEN + DATA_LEN;
             socket.send_with(total, |buf| {
@@ -222,9 +222,9 @@ struct Reply {
 
 /// Parse a received IP packet. If it is an echo reply from the target carrying
 /// our identifier, return its sequence number, data length and the timestamp.
-fn parse_reply(packet: &mut [u8], target: IpAddress, ident: u16) -> Option<Reply> {
+fn parse_reply(packet: &mut [u8], target: IpAddr, ident: u16) -> Option<Reply> {
     match target {
-        IpAddress::Ipv4(dst) => {
+        IpAddr::V4(dst) => {
             let mut ip = Ipv4Packet::new_checked(packet).ok()?;
             if ip.src_addr() != dst {
                 return None;
@@ -240,7 +240,7 @@ fn parse_reply(packet: &mut [u8], target: IpAddress, ident: u16) -> Option<Reply
                 timestamp: data.get(..8)?.try_into().unwrap(),
             })
         }
-        IpAddress::Ipv6(dst) => {
+        IpAddr::V6(dst) => {
             let mut ip = Ipv6Packet::new_checked(packet).ok()?;
             if ip.src_addr() != dst {
                 return None;

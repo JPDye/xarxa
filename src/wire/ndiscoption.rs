@@ -4,7 +4,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 use super::Result;
 use crate::error::Malformed;
 use crate::time::Duration;
-use crate::wire::{Ipv6Address, MAX_HARDWARE_ADDRESS_LEN};
+use crate::wire::{Ipv6Addr, MAX_HARDWARE_ADDRESS_LEN};
 
 use crate::wire::RawHardwareAddress;
 
@@ -239,8 +239,8 @@ impl<'a> NdiscOption<'a> {
 
     /// Return the prefix.
     #[inline]
-    pub fn prefix(&self) -> Ipv6Address {
-        Ipv6Address::from_octets(self.buffer[field::PREFIX].try_into().unwrap())
+    pub fn prefix(&self) -> Ipv6Addr {
+        Ipv6Addr::from_octets(self.buffer[field::PREFIX].try_into().unwrap())
     }
 }
 
@@ -320,7 +320,7 @@ impl<'a> NdiscOption<'a> {
 
     /// Set the prefix.
     #[inline]
-    pub fn set_prefix(&mut self, addr: Ipv6Address) {
+    pub fn set_prefix(&mut self, addr: Ipv6Addr) {
         self.buffer[field::PREFIX].copy_from_slice(&addr.octets());
     }
 }
@@ -347,7 +347,7 @@ impl<'a> NdiscOption<'a> {
 mod test {
     use super::Malformed;
     use super::{NdiscOption, PrefixInfoFlags, Type};
-    use crate::wire::Ipv6Address;
+    use crate::wire::Ipv6Addr;
 
     static PREFIX_OPT_BYTES: [u8; 32] = [
         0x03, 0x04, 0x40, 0xc0, 0x00, 0x00, 0x03, 0x84, 0x00, 0x00, 0x03, 0xe8, 0x00, 0x00, 0x00, 0x00, 0xfe, 0x80,
@@ -362,7 +362,7 @@ mod test {
         assert_eq!(opt.data_len(), 4);
         assert_eq!(opt.prefix_len(), 64);
         assert_eq!(opt.prefix_flags(), PrefixInfoFlags::ON_LINK | PrefixInfoFlags::ADDRCONF);
-        assert_eq!(opt.prefix(), Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
+        assert_eq!(opt.prefix(), Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
     }
 
     /// A 16-byte link-layer address option (data length 2) carries an

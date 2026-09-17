@@ -932,17 +932,17 @@ mod test {
     /// test vectors are addressed to.
     const OUR_LL: Ieee802154Address = Ieee802154Address::Extended([0x1a, 0x0b, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42]);
     /// OUR_LL as a link-local address.
-    const OUR_LINK_LOCAL: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 0, 0x180b, 0x4242, 0x4242, 0x4242);
+    const OUR_LINK_LOCAL: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0x180b, 0x4242, 0x4242, 0x4242);
     /// The sender of the echo request test vector.
     const PEER_LL: Ieee802154Address = Ieee802154Address::Extended([0x26, 0x1c, 0x29, 0x57, 0x34, 0xa6, 0x3a, 0x62]);
-    const PEER_LINK_LOCAL: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 0, 0x241c, 0x2957, 0x34a6, 0x3a62);
+    const PEER_LINK_LOCAL: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0x241c, 0x2957, 0x34a6, 0x3a62);
 
     /// The Contiki-NG node of the fragmentation test vectors, and the address
     /// the vectors are addressed to.
     const CONTIKI_LL: Ieee802154Address = Ieee802154Address::Extended([0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x0b, 0x1a]);
-    const CONTIKI_LINK_LOCAL: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 0, 0x4042, 0x4242, 0x4242, 0x0b1a);
+    const CONTIKI_LINK_LOCAL: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0x4042, 0x4242, 0x4242, 0x0b1a);
     const VECTOR_LL: Ieee802154Address = Ieee802154Address::Extended([0x90, 0xfc, 0x48, 0xc2, 0xa4, 0x41, 0xfc, 0x76]);
-    const VECTOR_LINK_LOCAL: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 0, 0x92fc, 0x48c2, 0xa441, 0xfc76);
+    const VECTOR_LINK_LOCAL: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0x92fc, 0x48c2, 0xa441, 0xfc76);
     /// The old test harness's own address.
     const ZERO_LL: Ieee802154Address = Ieee802154Address::Extended([0; 8]);
     const TWO_LL: Ieee802154Address = Ieee802154Address::Extended([0x02; 8]);
@@ -964,7 +964,7 @@ mod test {
         (stack, handle, rx, tx, room)
     }
 
-    fn fill_neighbor(stack: &mut Stack, iface: IfaceHandle, addr: Ipv6Address, ll: Ieee802154Address) {
+    fn fill_neighbor(stack: &mut Stack, iface: IfaceHandle, addr: Ipv6Addr, ll: Ieee802154Address) {
         stack
             .inner
             .neighbor_cache
@@ -1225,9 +1225,9 @@ mod test {
     /// An NDISC message from `src` to `dst`, as an IPv6 packet with hop limit 255.
     fn ndisc_packet(
         msg_type: Icmpv6Message,
-        src: Ipv6Address,
-        dst: Ipv6Address,
-        target: Ipv6Address,
+        src: Ipv6Addr,
+        dst: Ipv6Addr,
+        target: Ipv6Addr,
         option_type: NdiscOptionType,
         ll: Ieee802154Address,
     ) -> Vec<u8> {
@@ -1320,15 +1320,15 @@ mod test {
     #[test]
     fn test_ipv4_dropped() {
         let (mut stack, iface, _rx, tx, _room) = test_stack(OUR_LL, None);
-        let our_v4 = Ipv4Address::new(192, 168, 1, 1);
-        let remote_v4 = Ipv4Address::new(192, 168, 1, 2);
+        let our_v4 = Ipv4Addr::new(192, 168, 1, 1);
+        let remote_v4 = Ipv4Addr::new(192, 168, 1, 2);
         stack.iface(iface).add_ip_addr(IpCidr::new(our_v4.into(), 24)).unwrap();
         tx.borrow_mut().clear();
         let udp = stack.add_udp_socket().unwrap();
         let mut socket = stack.udp_socket(udp);
-        socket.bind(1234, IpListenEndpoint::UNSPECIFIED).unwrap();
+        socket.bind(1234, ListenSocketAddr::UNSPECIFIED).unwrap();
         assert_eq!(
-            socket.send_slice(b"hello", IpEndpoint::new(remote_v4.into(), 5678)),
+            socket.send_slice(b"hello", SocketAddr::new(remote_v4.into(), 5678)),
             Ok(())
         );
         stack.poll(Instant::ZERO);
@@ -1341,9 +1341,9 @@ mod test {
     fn test_handle_udp_broadcast() {
         let (mut stack, _iface, rx, _tx, _room) = test_stack(OUR_LL, Some(PAN));
         let udp = stack.add_udp_socket().unwrap();
-        stack.udp_socket(udp).bind(68, IpListenEndpoint::UNSPECIFIED).unwrap();
+        stack.udp_socket(udp).bind(68, ListenSocketAddr::UNSPECIFIED).unwrap();
 
-        let src = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+        let src = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
         let dst = IPV6_LINK_LOCAL_ALL_NODES;
         let datagram = udp_datagram(src.into(), 67, dst.into(), 68, b"Hello");
         let packet = ipv6_packet(src, dst, IpProtocol::Udp, &datagram);
@@ -1366,7 +1366,7 @@ mod test {
         let mut socket = stack.udp_socket(udp);
         let received = socket.recv().unwrap();
         assert_eq!(&*received, b"Hello");
-        assert_eq!(received.meta().endpoint, IpEndpoint::new(src.into(), 67));
+        assert_eq!(received.meta().endpoint, SocketAddr::new(src.into(), 67));
         assert_eq!(received.meta().local_address, Some(dst.into()));
     }
 
@@ -1376,7 +1376,7 @@ mod test {
     fn test_elided_udp_checksum() {
         let (mut stack, _iface, rx, _tx, _room) = test_stack(OUR_LL, Some(PAN));
         let udp = stack.add_udp_socket().unwrap();
-        stack.udp_socket(udp).bind(6969, IpListenEndpoint::UNSPECIFIED).unwrap();
+        stack.udp_socket(udp).bind(6969, ListenSocketAddr::UNSPECIFIED).unwrap();
 
         // IPHC: TF elided, NH compressed, hop limit 64, both addresses elided.
         let mut payload = vec![0x7e, 0x33];
@@ -1390,7 +1390,7 @@ mod test {
         let mut socket = stack.udp_socket(udp);
         let received = socket.recv().unwrap();
         assert_eq!(&*received, b"no checksum");
-        assert_eq!(received.meta().endpoint, IpEndpoint::new(PEER_LINK_LOCAL.into(), 1234));
+        assert_eq!(received.meta().endpoint, SocketAddr::new(PEER_LINK_LOCAL.into(), 1234));
     }
 
     static SIXLOWPAN_COMPRESSED_RPL_DAO: [u8; 99] = [
@@ -1443,11 +1443,11 @@ mod test {
         let mut our = [0u8; 16];
         our[..8].copy_from_slice(&context.0);
         our[8..].copy_from_slice(&OUR_LL.as_eui_64().unwrap());
-        let our = Ipv6Address::from_octets(our);
+        let our = Ipv6Addr::from_octets(our);
         let mut peer = [0u8; 16];
         peer[..8].copy_from_slice(&context.0);
         peer[8..].copy_from_slice(&PEER_LL.as_eui_64().unwrap());
-        let peer = Ipv6Address::from_octets(peer);
+        let peer = Ipv6Addr::from_octets(peer);
 
         let (mut stack, iface, rx, tx, _room) = test_stack(OUR_LL, None);
         stack.iface(iface).add_ip_addr(IpCidr::new(our.into(), 64)).unwrap();
@@ -1536,27 +1536,27 @@ mod test {
     fn test_roundtrip_matrix() {
         let short_ll = Ieee802154Address::Short([0x12, 0x34]);
         // (address, link-layer address it is sent with, compressed size)
-        let unicast: &[(Ipv6Address, Ieee802154Address, usize)] = &[
+        let unicast: &[(Ipv6Addr, Ieee802154Address, usize)] = &[
             (OUR_LINK_LOCAL, OUR_LL, 0),
-            (Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0xff, 0xfe00, 0x1234), short_ll, 0),
-            (Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0xff, 0xfe00, 0x5678), OUR_LL, 2),
-            (Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), OUR_LL, 8),
-            (Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1), OUR_LL, 16),
+            (Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0xff, 0xfe00, 0x1234), short_ll, 0),
+            (Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0xff, 0xfe00, 0x5678), OUR_LL, 2),
+            (Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1), OUR_LL, 8),
+            (Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1), OUR_LL, 16),
         ];
-        let multicast: &[(Ipv6Address, Ieee802154Address, usize)] = &[
+        let multicast: &[(Ipv6Addr, Ieee802154Address, usize)] = &[
             (IPV6_LINK_LOCAL_ALL_NODES, Ieee802154Address::BROADCAST, 1),
             (
-                Ipv6Address::new(0xff05, 0, 0, 0, 0, 0, 0x0001, 0x0203),
+                Ipv6Addr::new(0xff05, 0, 0, 0, 0, 0, 0x0001, 0x0203),
                 Ieee802154Address::BROADCAST,
                 4,
             ),
             (
-                Ipv6Address::new(0xff05, 0, 0, 0, 0, 0x0001, 0x0203, 0x0405),
+                Ipv6Addr::new(0xff05, 0, 0, 0, 0, 0x0001, 0x0203, 0x0405),
                 Ieee802154Address::BROADCAST,
                 6,
             ),
             (
-                Ipv6Address::new(0xff15, 0x1234, 0, 0, 0, 0, 0, 1),
+                Ipv6Addr::new(0xff15, 0x1234, 0, 0, 0, 0, 0, 1),
                 Ieee802154Address::BROADCAST,
                 16,
             ),
@@ -1564,7 +1564,7 @@ mod test {
         let hbh = [0x01, 0x04, 0, 0, 0, 0];
 
         let mut cases = 0;
-        for &(src, src_ll, src_len) in unicast.iter().chain([(Ipv6Address::UNSPECIFIED, OUR_LL, 0)].iter()) {
+        for &(src, src_ll, src_len) in unicast.iter().chain([(Ipv6Addr::UNSPECIFIED, OUR_LL, 0)].iter()) {
             for &(dst, dst_ll, dst_len) in unicast.iter().chain(multicast) {
                 for hop_limit in [1u8, 64, 255, 17] {
                     for (kind, ports) in [
@@ -1644,8 +1644,8 @@ mod test {
     /// the extra headroom the compressed chain needs.
     #[test]
     fn test_compress_no_room() {
-        let src = Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
-        let dst = Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
+        let src = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+        let dst = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
         let mut buf = PacketBuf::try_new().unwrap();
         let len = buf.capacity();
         buf.set_len(len);
@@ -1790,14 +1790,14 @@ In at rhoncus tortor. Cras blandit tellus diam, varius vestibulum nibh commodo n
         let udp = stack.add_udp_socket().unwrap();
         stack
             .udp_socket(udp)
-            .bind((VECTOR_LINK_LOCAL, 6969), IpListenEndpoint::UNSPECIFIED)
+            .bind((VECTOR_LINK_LOCAL, 6969), ListenSocketAddr::UNSPECIFIED)
             .unwrap();
 
         inject(&mut stack, &rx, frame(CONTIKI_LL, VECTOR_LL, PAN, &UDP_FIRST_PART));
         assert_eq!(stack.udp_socket(udp).recv().err(), Some(RecvError::Exhausted));
         inject(&mut stack, &rx, frame(CONTIKI_LL, VECTOR_LL, PAN, &UDP_SECOND_PART));
 
-        let remote = IpEndpoint::new(CONTIKI_LINK_LOCAL.into(), 54217);
+        let remote = SocketAddr::new(CONTIKI_LINK_LOCAL.into(), 54217);
         {
             let mut socket = stack.udp_socket(udp);
             let received = socket.recv().unwrap();
@@ -1833,7 +1833,7 @@ In at rhoncus tortor. Cras blandit tellus diam, varius vestibulum nibh commodo n
         let (mut stack, iface, rx, tx, room) = test_stack(OUR_LL, Some(PAN));
         fill_neighbor(&mut stack, iface, PEER_LINK_LOCAL, PEER_LL);
         let udp = stack.add_udp_socket().unwrap();
-        stack.udp_socket(udp).bind(6969, IpListenEndpoint::UNSPECIFIED).unwrap();
+        stack.udp_socket(udp).bind(6969, ListenSocketAddr::UNSPECIFIED).unwrap();
         (stack, iface, rx, tx, room, udp)
     }
 
@@ -1853,7 +1853,7 @@ In at rhoncus tortor. Cras blandit tellus diam, varius vestibulum nibh commodo n
         let received = socket.recv().unwrap();
         assert_eq!(received.len(), 300);
         assert!(received.iter().enumerate().all(|(i, &b)| b == i as u8));
-        assert_eq!(received.meta().endpoint, IpEndpoint::new(PEER_LINK_LOCAL.into(), 1234));
+        assert_eq!(received.meta().endpoint, SocketAddr::new(PEER_LINK_LOCAL.into(), 1234));
         assert_eq!(socket.recv().err(), Some(RecvError::Exhausted));
     }
 
@@ -1954,7 +1954,7 @@ In at rhoncus tortor. Cras blandit tellus diam, varius vestibulum nibh commodo n
     #[cfg(feature = "sixlowpan-fragmentation")]
     fn test_fragmenter_holds_sockets_back() {
         let (mut stack, _iface, _rx, tx, room, udp) = reassembly_stack();
-        let remote = IpEndpoint::new(PEER_LINK_LOCAL.into(), 1234);
+        let remote = SocketAddr::new(PEER_LINK_LOCAL.into(), 1234);
         let payload = vec![0x55; 300];
 
         room.set(Some(1));
@@ -1991,14 +1991,14 @@ In at rhoncus tortor. Cras blandit tellus diam, varius vestibulum nibh commodo n
     fn test_parked_packet_waits_for_fragmenter() {
         let (mut stack, _iface, rx, tx, room, udp) = reassembly_stack();
         let other_ll = Ieee802154Address::Extended([0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02]);
-        let other = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
+        let other = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
         let payload = vec![0x55; 300];
 
         // Park a big packet on the unresolved neighbor: only a solicitation goes out.
         assert_eq!(
             stack
                 .udp_socket(udp)
-                .send_slice(&payload, IpEndpoint::new(other.into(), 1)),
+                .send_slice(&payload, SocketAddr::new(other.into(), 1)),
             Ok(())
         );
         assert_eq!(tx.borrow().len(), 1);
@@ -2009,7 +2009,7 @@ In at rhoncus tortor. Cras blandit tellus diam, varius vestibulum nibh commodo n
         assert_eq!(
             stack
                 .udp_socket(udp)
-                .send_slice(&payload, IpEndpoint::new(PEER_LINK_LOCAL.into(), 1)),
+                .send_slice(&payload, SocketAddr::new(PEER_LINK_LOCAL.into(), 1)),
             Ok(())
         );
         assert_eq!(tx.borrow().len(), 1);

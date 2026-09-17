@@ -27,7 +27,7 @@ use crate::wire::IPV4_HEADER_LEN;
 #[cfg(feature = "ipv6")]
 use crate::wire::IPV6_HEADER_LEN;
 use crate::wire::{
-    IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, LINK_HEADER_LEN, TCP_HEADER_LEN, TcpControl, TcpPacket,
+    IpAddr, IpProtocol, LINK_HEADER_LEN, ListenSocketAddr, SocketAddr, TCP_HEADER_LEN, TcpControl, TcpPacket,
     TcpSeqNumber,
 };
 
@@ -497,8 +497,8 @@ enum AckDelayTimer {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 struct Tuple {
-    local: IpEndpoint,
-    remote: IpEndpoint,
+    local: SocketAddr,
+    remote: SocketAddr,
 }
 
 impl Display for Tuple {
@@ -943,7 +943,7 @@ impl<'d> TcpSocketState<'d> {
         self.binding.matches(arrival)
     }
 
-    pub(crate) fn accepts(&self, src_addr: &IpAddress, dst_addr: &IpAddress, repr: &TcpRepr) -> bool {
+    pub(crate) fn accepts(&self, src_addr: &IpAddr, dst_addr: &IpAddr, repr: &TcpRepr) -> bool {
         if self.state == State::Closed {
             return false;
         }
@@ -994,8 +994,8 @@ impl<'d> TcpSocketState<'d> {
     pub(crate) fn process(
         &mut self,
         now: Instant,
-        src_addr: &IpAddress,
-        dst_addr: &IpAddress,
+        src_addr: &IpAddr,
+        dst_addr: &IpAddr,
         repr: &TcpRepr,
     ) -> Option<TcpRepr<'static>> {
         debug_assert!(self.accepts(src_addr, dst_addr, repr));
@@ -1623,9 +1623,9 @@ impl<'d> TcpSocketState<'d> {
 
         let ip_header_len = match self.tuple.unwrap().local.addr {
             #[cfg(feature = "ipv4")]
-            IpAddress::Ipv4(_) => crate::wire::IPV4_HEADER_LEN,
+            IpAddr::V4(_) => crate::wire::IPV4_HEADER_LEN,
             #[cfg(feature = "ipv6")]
-            IpAddress::Ipv6(_) => crate::wire::IPV6_HEADER_LEN,
+            IpAddr::V6(_) => crate::wire::IPV6_HEADER_LEN,
         };
 
         // The effective max segment size, taking into account our and remote's limits.
@@ -1851,7 +1851,7 @@ impl<'d> TcpSocketState<'d> {
 
     pub(crate) fn dispatch<F, E>(&mut self, cx: &mut TxContext<'_, '_>, emit: F) -> Result<(), E>
     where
-        F: FnOnce(&mut TxContext<'_, '_>, (Option<EgressRoute>, IpAddress, IpAddress, u8, TcpRepr)) -> Result<(), E>,
+        F: FnOnce(&mut TxContext<'_, '_>, (Option<EgressRoute>, IpAddr, IpAddr, u8, TcpRepr)) -> Result<(), E>,
     {
         if self.tuple.is_none() {
             return Ok(());
@@ -1971,9 +1971,9 @@ impl<'d> TcpSocketState<'d> {
         let hop_limit = self.hop_limit.unwrap_or(64);
         let ip_header_len = match tuple.local.addr {
             #[cfg(feature = "ipv4")]
-            IpAddress::Ipv4(_) => IPV4_HEADER_LEN,
+            IpAddr::V4(_) => IPV4_HEADER_LEN,
             #[cfg(feature = "ipv6")]
-            IpAddress::Ipv6(_) => IPV6_HEADER_LEN,
+            IpAddr::V6(_) => IPV6_HEADER_LEN,
         };
 
         // Construct the basic TCP representation, an empty ACK packet.
@@ -2310,15 +2310,15 @@ impl<'d> TcpSocketState<'d> {
 /// pool is empty.
 pub(crate) fn build_tcp_packet(
     repr: &TcpRepr<'_>,
-    src_addr: &IpAddress,
-    dst_addr: &IpAddress,
+    src_addr: &IpAddr,
+    dst_addr: &IpAddr,
     checksum_caps: &ChecksumCapabilities,
 ) -> Option<PacketBuf> {
     let ip_header_len = match dst_addr {
         #[cfg(feature = "ipv4")]
-        IpAddress::Ipv4(_) => IPV4_HEADER_LEN,
+        IpAddr::V4(_) => IPV4_HEADER_LEN,
         #[cfg(feature = "ipv6")]
-        IpAddress::Ipv6(_) => IPV6_HEADER_LEN,
+        IpAddr::V6(_) => IPV6_HEADER_LEN,
     };
     let mut buf = PacketBuf::try_new()?;
     buf.reserve(LINK_HEADER_LEN + ip_header_len);
@@ -2336,8 +2336,8 @@ pub(crate) fn build_tcp_packet(
 pub(crate) fn process_icmp_error(
     sockets: &mut Slab<TcpSocketState, TCP_SOCKET_COUNT>,
     error: IcmpError,
-    local: IpEndpoint,
-    remote: IpEndpoint,
+    local: SocketAddr,
+    remote: SocketAddr,
     seq: TcpSeqNumber,
 ) {
     for (_, socket) in sockets.iter_mut() {
@@ -2620,13 +2620,13 @@ impl<'d> TcpSocket<'_, 'd> {
 
     /// Return the local endpoint, or None if not connected.
     #[inline]
-    pub fn local_endpoint(&self) -> Option<IpEndpoint> {
+    pub fn local_endpoint(&self) -> Option<SocketAddr> {
         Some(self.inner().tuple?.local)
     }
 
     /// Return the remote endpoint, or None if not connected.
     #[inline]
-    pub fn remote_endpoint(&self) -> Option<IpEndpoint> {
+    pub fn remote_endpoint(&self) -> Option<SocketAddr> {
         Some(self.inner().tuple?.remote)
     }
 
@@ -2660,11 +2660,11 @@ impl<'d> TcpSocket<'_, 'd> {
     /// is zero, or if the remote address is unspecified.
     pub fn connect<T, U>(&mut self, remote_endpoint: T, local_endpoint: U) -> Result<(), ConnectError>
     where
-        T: Into<IpEndpoint>,
-        U: Into<IpListenEndpoint>,
+        T: Into<SocketAddr>,
+        U: Into<ListenSocketAddr>,
     {
-        let remote_endpoint: IpEndpoint = remote_endpoint.into();
-        let local: IpListenEndpoint = local_endpoint.into();
+        let remote_endpoint: SocketAddr = remote_endpoint.into();
+        let local: ListenSocketAddr = local_endpoint.into();
 
         if self.is_open() {
             return Err(ConnectError::InvalidState);
@@ -2691,13 +2691,13 @@ impl<'d> TcpSocket<'_, 'd> {
                     .ok_or(ConnectError::Unaddressable)?
             }
         };
-        let mut local_endpoint = IpEndpoint::new(local_addr, local.port);
+        let mut local_endpoint = SocketAddr::new(local_addr, local.port);
 
         // The interface binding is part of the identity: same-tuple sockets
         // bound to different interfaces coexist, and a segment arrives on
         // exactly one interface.
         let (sockets, index) = (&self.sockets, self.index);
-        let tuple_in_use = |local: IpEndpoint| {
+        let tuple_in_use = |local: SocketAddr| {
             sockets.iter().any(|(i, s)| {
                 i != index
                     && s.binding == binding
@@ -2711,7 +2711,7 @@ impl<'d> TcpSocket<'_, 'd> {
 
         if local_endpoint.port == 0 {
             local_endpoint.port = alloc_ephemeral_port(self.tx.rand(), |port| {
-                tuple_in_use(IpEndpoint::new(local_endpoint.addr, port))
+                tuple_in_use(SocketAddr::new(local_endpoint.addr, port))
             })
             .ok_or(ConnectError::NoFreePorts)?;
         } else if tuple_in_use(local_endpoint) {
@@ -3115,7 +3115,7 @@ mod test {
     use crate::iface::Medium;
     use crate::stack::Stack;
     use crate::test_device::TestDevice;
-    use crate::wire::{HardwareAddress, IpCidr, Ipv4Address, Ipv6Address};
+    use crate::wire::{HardwareAddress, IpCidr, Ipv4Addr, Ipv6Addr};
     use std::ops::{Deref, DerefMut};
     use std::vec::Vec;
 
@@ -3132,22 +3132,22 @@ mod test {
     const LOCAL_SEQ: TcpSeqNumber = TcpSeqNumber(10000);
     const REMOTE_SEQ: TcpSeqNumber = TcpSeqNumber(-10001);
 
-    use crate::wire::Ipv4Address as IpvXAddress;
+    use crate::wire::Ipv4Addr as IpvXAddress;
 
     const LOCAL_ADDR: IpvXAddress = IpvXAddress::new(192, 168, 1, 1);
     const REMOTE_ADDR: IpvXAddress = IpvXAddress::new(192, 168, 1, 2);
     const OTHER_ADDR: IpvXAddress = IpvXAddress::new(192, 168, 1, 3);
     /// The unspecified address of the *other* IP version than the one under test.
-    const OTHER_VERSION_ANY: IpAddress = IpAddress::Ipv6(Ipv6Address::UNSPECIFIED);
+    const OTHER_VERSION_ANY: IpAddr = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
 
     const BASE_MSS: u16 = 1460;
 
-    const LOCAL_END: IpEndpoint = IpEndpoint {
-        addr: IpAddress::Ipv4(LOCAL_ADDR),
+    const LOCAL_END: SocketAddr = SocketAddr {
+        addr: IpAddr::V4(LOCAL_ADDR),
         port: LOCAL_PORT,
     };
-    const REMOTE_END: IpEndpoint = IpEndpoint {
-        addr: IpAddress::Ipv4(REMOTE_ADDR),
+    const REMOTE_END: SocketAddr = SocketAddr {
+        addr: IpAddr::V4(REMOTE_ADDR),
         port: REMOTE_PORT,
     };
 
@@ -3224,8 +3224,8 @@ mod test {
     fn send(socket: &mut TestSocket, timestamp: Instant, repr: &TcpRepr) -> Option<TcpRepr<'static>> {
         socket.stack.inner.now = timestamp;
 
-        let src_addr = IpAddress::from(REMOTE_ADDR);
-        let dst_addr = IpAddress::from(LOCAL_ADDR);
+        let src_addr = IpAddr::from(REMOTE_ADDR);
+        let dst_addr = IpAddr::from(LOCAL_ADDR);
         trace!("send: {}", repr);
 
         assert!(socket.sockets.get_mut(0).accepts(&src_addr, &dst_addr, repr));
@@ -3355,7 +3355,7 @@ mod test {
             .iface(handle)
             .set_ip_addrs([
                 IpCidr::new(LOCAL_ADDR.into(), 24),
-                IpCidr::new(Ipv4Address::new(127, 0, 0, 1).into(), 8),
+                IpCidr::new(Ipv4Addr::new(127, 0, 0, 1).into(), 8),
             ])
             .unwrap();
         stack
@@ -3555,12 +3555,12 @@ mod test {
 
     /// Like [`listener_deliver`], with an explicit destination address.
     #[cfg(feature = "tcp-listener")]
-    fn listener_deliver_to(stack: &mut Stack, dst_addr: Ipv4Address, repr: &TcpRepr) -> bool {
+    fn listener_deliver_to(stack: &mut Stack, dst_addr: Ipv4Addr, repr: &TcpRepr) -> bool {
         process_listeners(
             &mut stack.sockets.tcp_listeners,
             IfaceHandle::new(0),
-            &IpAddress::from(REMOTE_ADDR),
-            &IpAddress::from(dst_addr),
+            &IpAddr::from(REMOTE_ADDR),
+            &IpAddr::from(dst_addr),
             repr,
         )
     }
@@ -3710,7 +3710,7 @@ mod test {
         assert_eq!(stack.tcp_socket(sh).state(), State::SynReceived);
         assert_eq!(
             stack.tcp_socket(sh).remote_endpoint(),
-            Some(IpEndpoint::new(REMOTE_ADDR.into(), REMOTE_PORT + 1))
+            Some(SocketAddr::new(REMOTE_ADDR.into(), REMOTE_PORT + 1))
         );
         assert!(stack.sockets.tcp.get(sh.index()).tx_buffer.is_empty());
     }
@@ -3824,8 +3824,8 @@ mod test {
         process_listeners(
             &mut stack.sockets.tcp_listeners,
             iface,
-            &IpAddress::from(REMOTE_ADDR),
-            &IpAddress::from(LOCAL_ADDR),
+            &IpAddr::from(REMOTE_ADDR),
+            &IpAddr::from(LOCAL_ADDR),
             repr,
         )
     }
@@ -4589,8 +4589,8 @@ mod test {
 
     #[test]
     fn test_connect_tuple_conflicts() {
-        const OTHER_REMOTE_END: IpEndpoint = IpEndpoint {
-            addr: IpAddress::Ipv4(OTHER_ADDR),
+        const OTHER_REMOTE_END: SocketAddr = SocketAddr {
+            addr: IpAddr::V4(OTHER_ADDR),
             port: REMOTE_PORT,
         };
 
@@ -11511,10 +11511,10 @@ mod stack_test {
     use crate::iface::Medium;
     use crate::stack::Stack;
     use crate::test_device::TestDevice;
-    use crate::wire::{HardwareAddress, IpCidr, Ipv4Address, Ipv4Packet};
+    use crate::wire::{HardwareAddress, IpCidr, Ipv4Addr, Ipv4Packet};
 
-    const LOCAL_ADDR: Ipv4Address = Ipv4Address::new(192, 168, 1, 1);
-    const REMOTE_ADDR: Ipv4Address = Ipv4Address::new(192, 168, 1, 2);
+    const LOCAL_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
+    const REMOTE_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 2);
     const LOCAL_PORT: u16 = 80;
     const REMOTE_PORT: u16 = 49500;
 

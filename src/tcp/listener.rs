@@ -12,7 +12,7 @@ use crate::tcp::TcpSeqNumber;
 use crate::tcp::congestion::Controller as _;
 #[cfg(feature = "async")]
 use crate::waker::WakerRegistration;
-use crate::wire::{IpAddress, IpEndpoint, IpListenEndpoint};
+use crate::wire::{IpAddr, ListenSocketAddr, SocketAddr};
 
 define_handle! {
     /// A handle to a TCP listener added to a [`Stack`].
@@ -49,7 +49,7 @@ pub(crate) struct TcpListenerState {
     /// The listened endpoint. A zero port means the listener is closed. The
     /// address scopes the listen, from any address of any version down to one
     /// exact address.
-    local: IpListenEndpoint,
+    local: ListenSocketAddr,
     /// The interface the listener is bound to. Zero-sized without `iface-bind`.
     binding: IfaceBinding,
     /// The accept queue: SYNs waiting to be accepted, deduplicated by 4-tuple.
@@ -61,7 +61,7 @@ pub(crate) struct TcpListenerState {
 impl TcpListenerState {
     pub(crate) fn new() -> TcpListenerState {
         TcpListenerState {
-            local: IpListenEndpoint::UNSPECIFIED,
+            local: ListenSocketAddr::UNSPECIFIED,
             binding: IfaceBinding::Any,
             queue: BoundedDeque::new(),
             #[cfg(feature = "async")]
@@ -76,7 +76,7 @@ impl TcpListenerState {
     /// exact local-address match outscores a per-version one, which outscores a
     /// wildcard, and a listener bound to the arrival interface outscores an
     /// unbound one.
-    pub(crate) fn match_score(&self, arrival: IfaceHandle, dst_addr: &IpAddress, dst_port: u16) -> Option<u8> {
+    pub(crate) fn match_score(&self, arrival: IfaceHandle, dst_addr: &IpAddr, dst_port: u16) -> Option<u8> {
         if self.local.port == 0 || dst_port != self.local.port {
             return None;
         }
@@ -91,11 +91,11 @@ impl TcpListenerState {
     /// full queue the SYN is dropped silently, and the client retries. Nothing
     /// is ever transmitted in response. The SYN|ACK is sent by the socket the
     /// attempt is [`accept`](crate::tcp::TcpSocket::accept)ed into.
-    fn record_syn(&mut self, src_addr: &IpAddress, dst_addr: &IpAddress, repr: &TcpRepr) {
+    fn record_syn(&mut self, src_addr: &IpAddr, dst_addr: &IpAddr, repr: &TcpRepr) {
         debug_assert!(repr.control == TcpControl::Syn && repr.ack_number.is_none());
         let tuple = Tuple {
-            local: IpEndpoint::new(*dst_addr, repr.dst_port),
-            remote: IpEndpoint::new(*src_addr, repr.src_port),
+            local: SocketAddr::new(*dst_addr, repr.dst_port),
+            remote: SocketAddr::new(*src_addr, repr.src_port),
         };
         let syn = PendingSyn {
             tuple,
@@ -136,11 +136,11 @@ impl TcpListenerState {
     /// was removed. The client gave up before we accepted. The only acceptable
     /// sequence number for a connection with nothing received past the SYN is
     /// exactly RCV.NXT.
-    fn process_rst(&mut self, src_addr: &IpAddress, dst_addr: &IpAddress, repr: &TcpRepr) -> bool {
+    fn process_rst(&mut self, src_addr: &IpAddr, dst_addr: &IpAddr, repr: &TcpRepr) -> bool {
         debug_assert!(repr.control == TcpControl::Rst);
         let tuple = Tuple {
-            local: IpEndpoint::new(*dst_addr, repr.dst_port),
-            remote: IpEndpoint::new(*src_addr, repr.src_port),
+            local: SocketAddr::new(*dst_addr, repr.dst_port),
+            remote: SocketAddr::new(*src_addr, repr.src_port),
         };
         let before = self.queue.len();
         self.queue
@@ -166,8 +166,8 @@ impl TcpListenerState {
 pub(crate) fn process_listeners(
     listeners: &mut Slab<TcpListenerState, TCP_LISTENER_COUNT>,
     iface: IfaceHandle,
-    src_addr: &IpAddress,
-    dst_addr: &IpAddress,
+    src_addr: &IpAddr,
+    dst_addr: &IpAddr,
     repr: &TcpRepr,
 ) -> bool {
     match repr.control {
@@ -212,12 +212,12 @@ pub struct AcceptToken {
 
 impl AcceptToken {
     /// The local endpoint the client is connecting to.
-    pub fn local_endpoint(&self) -> IpEndpoint {
+    pub fn local_endpoint(&self) -> SocketAddr {
         self.syn.tuple.local
     }
 
     /// The remote endpoint the connection attempt comes from.
-    pub fn remote_endpoint(&self) -> IpEndpoint {
+    pub fn remote_endpoint(&self) -> SocketAddr {
         self.syn.tuple.remote
     }
 
@@ -304,7 +304,7 @@ impl TcpListener<'_> {
     ///   endpoint. Listeners on the same port with *different* specificity (one
     ///   wildcard, one per-version, one per-address) may coexist, and so may
     ///   listeners on identical endpoints bound to different interfaces.
-    pub fn listen(&mut self, local_endpoint: impl Into<IpListenEndpoint>) -> Result<(), ListenError> {
+    pub fn listen(&mut self, local_endpoint: impl Into<ListenSocketAddr>) -> Result<(), ListenError> {
         let local = local_endpoint.into();
         if local.port == 0 {
             return Err(ListenError::Unaddressable);
@@ -365,7 +365,7 @@ impl TcpListener<'_> {
     /// answered with an RST once the listener is gone.
     pub fn close(&mut self) {
         let state = self.inner_mut();
-        state.local = IpListenEndpoint::UNSPECIFIED;
+        state.local = ListenSocketAddr::UNSPECIFIED;
         state.queue.clear();
         // Wake the task waiting, so it can notice the listener is closed.
         #[cfg(feature = "async")]
@@ -381,7 +381,7 @@ impl TcpListener<'_> {
     /// Return the listened endpoint. The address is the filter the listen scoped
     /// the listener to. A zero port means the listener is closed.
     #[inline]
-    pub fn local_endpoint(&self) -> IpListenEndpoint {
+    pub fn local_endpoint(&self) -> ListenSocketAddr {
         self.inner().local
     }
 

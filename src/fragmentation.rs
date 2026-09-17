@@ -68,9 +68,9 @@ impl SixlowpanFragmenter {
 #[cfg(feature = "ipv4-fragmentation")]
 pub(crate) struct Ipv4Fragmenter {
     /// The destination address.
-    pub dst_addr: IpAddress,
+    pub dst_addr: IpAddr,
     /// The next hop the packet was routed to.
-    pub next_hop: IpAddress,
+    pub next_hop: IpAddr,
     /// The offset of the next fragment.
     pub frag_offset: u16,
     /// The identifier of the stream.
@@ -86,8 +86,8 @@ impl Fragmenter {
 
             #[cfg(feature = "ipv4-fragmentation")]
             ipv4: Ipv4Fragmenter {
-                dst_addr: IpAddress::Ipv4(Ipv4Address::UNSPECIFIED),
-                next_hop: IpAddress::Ipv4(Ipv4Address::UNSPECIFIED),
+                dst_addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                next_hop: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                 frag_offset: 0,
                 ident: 0,
             },
@@ -116,8 +116,8 @@ impl Fragmenter {
 
         #[cfg(feature = "ipv4-fragmentation")]
         {
-            self.ipv4.dst_addr = IpAddress::Ipv4(Ipv4Address::UNSPECIFIED);
-            self.ipv4.next_hop = IpAddress::Ipv4(Ipv4Address::UNSPECIFIED);
+            self.ipv4.dst_addr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+            self.ipv4.next_hop = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
             self.ipv4.frag_offset = 0;
             self.ipv4.ident = 0;
         }
@@ -174,8 +174,8 @@ impl StackInner {
     pub(crate) fn fragment_ipv4(
         &mut self,
         iface: &mut IfaceState<'_>,
-        dst_addr: IpAddress,
-        next_hop: IpAddress,
+        dst_addr: IpAddr,
+        next_hop: IpAddr,
         mut buf: PacketBuf,
     ) {
         debug!("start fragmentation");

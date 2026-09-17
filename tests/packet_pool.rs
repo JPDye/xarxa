@@ -5,7 +5,7 @@ use xarxa::Stack;
 use xarxa::driver::PacketBuf;
 use xarxa::iface::Medium;
 use xarxa::udp::SendError;
-use xarxa::wire::{HardwareAddress, IpCidr, IpEndpoint, IpListenEndpoint, Ipv4Address};
+use xarxa::wire::{HardwareAddress, IpCidr, Ipv4Addr, ListenSocketAddr, SocketAddr};
 
 use test_device::TestDevice;
 
@@ -22,11 +22,11 @@ fn exhaustion() {
     let iface = TestDevice::new(Medium::Ip).install(&mut stack, HardwareAddress::Ip);
     stack
         .iface(iface)
-        .add_ip_addr(IpCidr::new(Ipv4Address::new(192, 168, 1, 1).into(), 24))
+        .add_ip_addr(IpCidr::new(Ipv4Addr::new(192, 168, 1, 1).into(), 24))
         .unwrap();
     let udp = stack.add_udp_socket().unwrap();
-    stack.udp_socket(udp).bind(1234, IpListenEndpoint::UNSPECIFIED).unwrap();
-    let dst = IpEndpoint::new(Ipv4Address::new(192, 168, 1, 2).into(), 5678);
+    stack.udp_socket(udp).bind(1234, ListenSocketAddr::UNSPECIFIED).unwrap();
+    let dst = SocketAddr::new(Ipv4Addr::new(192, 168, 1, 2).into(), 5678);
 
     // Sends work while the pool has buffers. The device drops what it is given,
     // so a send leaves the pool as it found it.

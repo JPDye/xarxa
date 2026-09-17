@@ -17,14 +17,14 @@ use crate::route::{Route as IfaceRoute, RouteOrigin};
 use crate::stack::StackInner;
 use crate::time::{Duration, Instant};
 use crate::wire::{
-    HardwareAddress, IPV6_HEADER_LEN, IPV6_LINK_LOCAL_ALL_ROUTERS, Icmpv6Message, Icmpv6Packet, IpCidr, Ipv6Address,
+    HardwareAddress, IPV6_HEADER_LEN, IPV6_LINK_LOCAL_ALL_ROUTERS, Icmpv6Message, Icmpv6Packet, IpCidr, Ipv6Addr,
     Ipv6Cidr, LINK_HEADER_LEN, NdiscOption, NdiscOptionType, NdiscPrefixInfoFlags, NdiscRouterFlags,
     RawHardwareAddress, ipv6::AddressExt,
 };
 
 const MAX_RTR_SOLICITATIONS: u8 = 3;
 const RTR_SOLICITATION_INTERVAL: Duration = Duration::from_secs(4);
-const IPV6_DEFAULT: Ipv6Cidr = Ipv6Cidr::new(Ipv6Address::UNSPECIFIED, 0);
+const IPV6_DEFAULT: Ipv6Cidr = Ipv6Cidr::new(Ipv6Addr::UNSPECIFIED, 0);
 
 /// SLAAC configuration, passed to [`Iface::set_slaac`](super::Iface::set_slaac).
 ///
@@ -67,7 +67,7 @@ struct Route {
     /// IPv6 cidr to route
     cidr: Ipv6Cidr,
     /// Router, origin of the advertisement
-    via_router: Ipv6Address,
+    via_router: Ipv6Addr,
     /// Valid lifetime of the route
     valid_until: Instant,
 }
@@ -87,7 +87,7 @@ pub(crate) struct PrefixInformation {
     pub flags: NdiscPrefixInfoFlags,
     pub valid_lifetime: Duration,
     pub preferred_lifetime: Duration,
-    pub prefix: Ipv6Address,
+    pub prefix: Ipv6Addr,
 }
 
 impl PrefixInformation {
@@ -124,7 +124,7 @@ impl PrefixInfo {
 
 impl Route {
     /// Compare this route based on the prefix and the next hop router.
-    fn same_route(&self, cidr: &Ipv6Cidr, via_router: &Ipv6Address) -> bool {
+    fn same_route(&self, cidr: &Ipv6Cidr, via_router: &Ipv6Addr) -> bool {
         self.cidr == *cidr && self.via_router == *via_router
     }
 
@@ -210,7 +210,7 @@ impl Slaac {
         }
     }
 
-    fn add_route(&mut self, cidr: &Ipv6Cidr, router: &Ipv6Address, valid_until: Instant) {
+    fn add_route(&mut self, cidr: &Ipv6Cidr, router: &Ipv6Addr, valid_until: Instant) {
         if let Some(route) = self.routes.iter_mut().find(|r| r.same_route(cidr, router)) {
             route.valid_until = valid_until;
         } else if self
@@ -228,7 +228,7 @@ impl Slaac {
         self.sync_required = true;
     }
 
-    fn expire_route(&mut self, cidr: &Ipv6Cidr, via_router: &Ipv6Address) {
+    fn expire_route(&mut self, cidr: &Ipv6Cidr, via_router: &Ipv6Addr) {
         for route in self.routes.iter_mut() {
             if route.same_route(cidr, via_router) {
                 route.valid_until = Instant::from_millis(0);
@@ -257,7 +257,7 @@ impl Slaac {
     /// them, in order.
     pub(crate) fn process_advertisement(
         &mut self,
-        source: &Ipv6Address,
+        source: &Ipv6Addr,
         flags: NdiscRouterFlags,
         router_lifetime: Duration, // default route lifetime
         prefixes: impl Iterator<Item = PrefixInformation>,
@@ -369,7 +369,7 @@ fn from_link_prefix(link_prefix: &Ipv6Cidr, hardware_addr: HardwareAddress) -> O
     let mut bytes = [0; 16];
     bytes[0..8].copy_from_slice(&link_prefix.address().octets()[0..8]);
     bytes[8..16].copy_from_slice(&hardware_addr.as_eui_64()?);
-    Some(Ipv6Cidr::new(Ipv6Address::from_octets(bytes), 64))
+    Some(Ipv6Cidr::new(Ipv6Addr::from_octets(bytes), 64))
 }
 
 impl IfaceState<'_> {
@@ -377,7 +377,7 @@ impl IfaceState<'_> {
     pub(crate) fn slaac_process_advertisement(
         &mut self,
         inner: &mut StackInner,
-        src_addr: Ipv6Address,
+        src_addr: Ipv6Addr,
         icmp_packet: &mut Icmpv6Packet<'_>,
     ) {
         let Some(slaac) = &mut self.slaac else { return };
@@ -426,7 +426,7 @@ impl IfaceState<'_> {
             && let Ok(lladdr) = lladdr.parse(self.medium())
             && lladdr.is_unicast()
         {
-            inner.fill_neighbor(self, crate::wire::IpAddress::Ipv6(src_addr), lladdr);
+            inner.fill_neighbor(self, crate::wire::IpAddr::V6(src_addr), lladdr);
         }
     }
 
@@ -447,7 +447,7 @@ impl IfaceState<'_> {
             let Some(address) = from_link_prefix(prefix, hardware_addr) else {
                 continue;
             };
-            match self.ip_addrs.iter_mut().find(|a| a.cidr == IpCidr::Ipv6(address)) {
+            match self.ip_addrs.iter_mut().find(|a| a.cidr == IpCidr::V6(address)) {
                 // One we installed: refresh it rather than leave it behind. The router
                 // shortens a prefix's preferred lifetime to retire it, and the address
                 // formed from it has to follow, or nothing downstream can tell that it
@@ -460,7 +460,7 @@ impl IfaceState<'_> {
                 Some(_) => {}
                 None => {
                     let new_addr = IfaceAddr {
-                        cidr: IpCidr::Ipv6(address),
+                        cidr: IpCidr::V6(address),
                         origin: AddrOrigin::Slaac,
                         preferred_until: Some(prefixinfo.preferred_until),
                     };
@@ -472,7 +472,7 @@ impl IfaceState<'_> {
         }
         // ...and the address of every expired prefix goes.
         self.ip_addrs.retain(|a| match a.cidr {
-            IpCidr::Ipv6(address) => {
+            IpCidr::V6(address) => {
                 !(a.origin == AddrOrigin::Slaac
                     && slaac.prefix.iter().any(|(prefix, prefixinfo)| {
                         !prefixinfo.is_valid(timestamp) && from_link_prefix(prefix, hardware_addr) == Some(address)
@@ -486,7 +486,7 @@ impl IfaceState<'_> {
             let handle = self.handle;
             let slaac_routes = &slaac.routes;
             inner.routes.retain(|r| match (&r.cidr, &r.via_router) {
-                (IpCidr::Ipv6(cidr), crate::wire::IpAddress::Ipv6(via_router)) => {
+                (IpCidr::V6(cidr), crate::wire::IpAddr::V6(via_router)) => {
                     !(r.origin == RouteOrigin::Slaac
                         && r.iface == handle
                         && slaac_routes
@@ -502,7 +502,7 @@ impl IfaceState<'_> {
                     r.origin == RouteOrigin::Slaac
                         && r.iface == handle
                         && match (&r.cidr, &r.via_router) {
-                            (IpCidr::Ipv6(cidr), crate::wire::IpAddress::Ipv6(via_router)) => {
+                            (IpCidr::V6(cidr), crate::wire::IpAddr::V6(via_router)) => {
                                 route.same_route(cidr, via_router)
                             }
                             #[allow(unreachable_patterns)]
@@ -601,18 +601,18 @@ mod test {
     use std::vec::Vec;
     mod mock {
         use super::super::*;
-        pub const SOURCE: Ipv6Address = Ipv6Address::new(0xfe80, 0xdb8, 0, 0, 0, 0, 0, 0);
+        pub const SOURCE: Ipv6Addr = Ipv6Addr::new(0xfe80, 0xdb8, 0, 0, 0, 0, 0, 0);
         pub const PREFIX: PrefixInformation = PrefixInformation {
             prefix_len: 64,
             flags: NdiscPrefixInfoFlags::ADDRCONF,
             valid_lifetime: Duration::from_secs(700),
             preferred_lifetime: Duration::from_secs(300),
-            prefix: Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0),
+            prefix: Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0),
         };
         pub const VALID: Duration = Duration::from_secs(600);
 
         pub const ROUTE: Route = Route {
-            cidr: Ipv6Cidr::new(Ipv6Address::UNSPECIFIED, 0),
+            cidr: Ipv6Cidr::new(Ipv6Addr::UNSPECIFIED, 0),
             via_router: SOURCE,
             valid_until: Instant::from_millis_const(100000),
         };
@@ -631,11 +631,11 @@ mod test {
 
     #[test]
     fn test_route() {
-        assert!(ROUTE.same_route(&Ipv6Cidr::new(Ipv6Address::UNSPECIFIED, 0), &SOURCE));
-        assert!(!ROUTE.same_route(&Ipv6Cidr::new(Ipv6Address::UNSPECIFIED, 64), &SOURCE));
-        assert!(!ROUTE.same_route(&Ipv6Cidr::new(Ipv6Address::UNSPECIFIED, 0), &Ipv6Address::UNSPECIFIED));
-        assert!(!ROUTE.same_route(&Ipv6Cidr::new(SOURCE, 0), &Ipv6Address::UNSPECIFIED));
-        assert!(!ROUTE.same_route(&Ipv6Cidr::new(SOURCE, 64), &Ipv6Address::UNSPECIFIED));
+        assert!(ROUTE.same_route(&Ipv6Cidr::new(Ipv6Addr::UNSPECIFIED, 0), &SOURCE));
+        assert!(!ROUTE.same_route(&Ipv6Cidr::new(Ipv6Addr::UNSPECIFIED, 64), &SOURCE));
+        assert!(!ROUTE.same_route(&Ipv6Cidr::new(Ipv6Addr::UNSPECIFIED, 0), &Ipv6Addr::UNSPECIFIED));
+        assert!(!ROUTE.same_route(&Ipv6Cidr::new(SOURCE, 0), &Ipv6Addr::UNSPECIFIED));
+        assert!(!ROUTE.same_route(&Ipv6Cidr::new(SOURCE, 64), &Ipv6Addr::UNSPECIFIED));
     }
 
     #[test]
@@ -701,7 +701,7 @@ mod test {
         }
 
         for route in slaac.routes.iter() {
-            assert_eq!(route.cidr, Ipv6Cidr::new(Ipv6Address::UNSPECIFIED, 0));
+            assert_eq!(route.cidr, Ipv6Cidr::new(Ipv6Addr::UNSPECIFIED, 0));
             assert_eq!(route.via_router, SOURCE);
             assert_eq!(route.valid_until, now + VALID);
             assert!(route.is_valid(now));

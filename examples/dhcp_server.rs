@@ -19,7 +19,7 @@ use xarxa::Stack;
 use xarxa::driver_impls::{TunTapDriver, wait};
 use xarxa::iface::dhcpv4_server::DhcpServerConfig;
 use xarxa::time::Instant;
-use xarxa::wire::{EthernetAddress, HardwareAddress, IpCidr, Ipv4Address};
+use xarxa::wire::{EthernetAddress, HardwareAddress, IpCidr, Ipv4Addr};
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
@@ -30,7 +30,7 @@ fn main() {
     let driver = TunTapDriver::new(&name, hardware_addr).unwrap();
     let fd = driver.as_raw_fd();
 
-    let server_ip = Ipv4Address::new(192, 168, 69, 1);
+    let server_ip = Ipv4Addr::new(192, 168, 69, 1);
     let mut stack = Stack::new(random_seed());
     let iface = stack.add_iface(Box::new(driver)).unwrap();
     stack
@@ -39,7 +39,7 @@ fn main() {
         .unwrap();
 
     // Lease addresses .50 to .99, naming ourselves as the gateway and DNS server.
-    let mut config = DhcpServerConfig::new(Ipv4Address::new(192, 168, 69, 50), Ipv4Address::new(192, 168, 69, 99));
+    let mut config = DhcpServerConfig::new(Ipv4Addr::new(192, 168, 69, 50), Ipv4Addr::new(192, 168, 69, 99));
     config.gateway = Some(server_ip);
     config.dns_servers.push(server_ip).unwrap();
     stack.iface(iface).set_dhcpv4_server(Some(config)).unwrap();

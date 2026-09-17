@@ -9,7 +9,7 @@ use core::fmt;
 
 use crate::driver::ChecksumCapabilities;
 use crate::error::Malformed;
-use crate::wire::{IpAddress, Result, TCP_HEADER_LEN, TcpControl, TcpOption, TcpPacket, TcpSeqNumber};
+use crate::wire::{IpAddr, Result, TCP_HEADER_LEN, TcpControl, TcpOption, TcpPacket, TcpSeqNumber};
 
 /// A high-level representation of a Transmission Control Protocol packet.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -60,7 +60,7 @@ impl<'a> TcpRepr<'a> {
     ///
     /// The checksum is not verified here. The caller verifies it on the wire packet
     /// before parsing.
-    pub fn parse(packet: &'a TcpPacket<'_>, src_addr: &IpAddress, dst_addr: &IpAddress) -> Result<TcpRepr<'a>> {
+    pub fn parse(packet: &'a TcpPacket<'_>, src_addr: &IpAddr, dst_addr: &IpAddr) -> Result<TcpRepr<'a>> {
         packet.check_len()?;
 
         // Source and destination ports must be present.
@@ -204,8 +204,8 @@ impl<'a> TcpRepr<'a> {
     pub fn emit(
         &self,
         packet: &mut TcpPacket<'_>,
-        src_addr: &IpAddress,
-        dst_addr: &IpAddress,
+        src_addr: &IpAddr,
+        dst_addr: &IpAddr,
         checksum_caps: &ChecksumCapabilities,
     ) {
         packet.set_src_port(self.src_port);
@@ -307,10 +307,10 @@ impl<'a> fmt::Display for TcpRepr<'a> {
 #[cfg(all(test, feature = "ipv4"))]
 mod test {
     use super::*;
-    use crate::wire::Ipv4Address;
+    use crate::wire::Ipv4Addr;
 
-    const SRC_ADDR: Ipv4Address = Ipv4Address::new(192, 168, 1, 1);
-    const DST_ADDR: Ipv4Address = Ipv4Address::new(192, 168, 1, 2);
+    const SRC_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 1);
+    const DST_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 2);
 
     static PAYLOAD_BYTES: [u8; 4] = [0xaa, 0x00, 0x00, 0xff];
 

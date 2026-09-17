@@ -3,7 +3,7 @@ use byteorder::{ByteOrder, NetworkEndian};
 use super::Result;
 use crate::error::Malformed;
 use crate::time::Duration;
-use crate::wire::Ipv4Address;
+use crate::wire::Ipv4Addr;
 use crate::wire::ip::checksum;
 
 open_enum! {
@@ -108,8 +108,8 @@ impl<'a> Packet<'a> {
 
     /// Return the group address field.
     #[inline]
-    pub fn group_addr(&self) -> Ipv4Address {
-        Ipv4Address::from_octets(self.buffer[field::GROUP_ADDRESS].try_into().unwrap())
+    pub fn group_addr(&self) -> Ipv4Addr {
+        Ipv4Addr::from_octets(self.buffer[field::GROUP_ADDRESS].try_into().unwrap())
     }
 
     /// Validate the header checksum.
@@ -153,7 +153,7 @@ impl<'a> Packet<'a> {
 
     /// Set the group address field
     #[inline]
-    pub fn set_group_address(&mut self, addr: Ipv4Address) {
+    pub fn set_group_address(&mut self, addr: Ipv4Addr) {
         self.buffer[field::GROUP_ADDRESS].copy_from_slice(&addr.octets());
     }
 
@@ -208,7 +208,7 @@ mod test {
         assert_eq!(packet.msg_type(), Message::LeaveGroup);
         assert_eq!(packet.max_resp_code(), 0);
         assert_eq!(packet.checksum(), 0x269);
-        assert_eq!(packet.group_addr(), Ipv4Address::from_octets([224, 0, 6, 150]));
+        assert_eq!(packet.group_addr(), Ipv4Addr::from_octets([224, 0, 6, 150]));
         assert!(packet.verify_checksum());
     }
 
@@ -219,7 +219,7 @@ mod test {
         assert_eq!(packet.msg_type(), Message::MembershipReportV2);
         assert_eq!(packet.max_resp_code(), 0);
         assert_eq!(packet.checksum(), 0x08da);
-        assert_eq!(packet.group_addr(), Ipv4Address::from_octets([225, 0, 0, 37]));
+        assert_eq!(packet.group_addr(), Ipv4Addr::from_octets([225, 0, 0, 37]));
         assert!(packet.verify_checksum());
     }
 
@@ -229,7 +229,7 @@ mod test {
         let mut packet = Packet::new_unchecked(&mut bytes);
         packet.set_msg_type(Message::LeaveGroup);
         packet.set_max_resp_code(0);
-        packet.set_group_address(Ipv4Address::from_octets([224, 0, 6, 150]));
+        packet.set_group_address(Ipv4Addr::from_octets([224, 0, 6, 150]));
         packet.fill_checksum();
         assert_eq!(&bytes[..], &LEAVE_PACKET_BYTES[..]);
     }
@@ -240,7 +240,7 @@ mod test {
         let mut packet = Packet::new_unchecked(&mut bytes);
         packet.set_msg_type(Message::MembershipReportV2);
         packet.set_max_resp_code(0);
-        packet.set_group_address(Ipv4Address::from_octets([225, 0, 0, 37]));
+        packet.set_group_address(Ipv4Addr::from_octets([225, 0, 0, 37]));
         packet.fill_checksum();
         assert_eq!(&bytes[..], &REPORT_PACKET_BYTES[..]);
     }

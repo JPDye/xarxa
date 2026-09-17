@@ -7,7 +7,7 @@ use core::iter;
 use super::Result;
 use crate::error::Malformed;
 use crate::wire::arp::Hardware;
-use crate::wire::{EthernetAddress, Ipv4Address};
+use crate::wire::{EthernetAddress, Ipv4Addr};
 
 /// The UDP port DHCP servers listen on.
 pub const SERVER_PORT: u16 = 67;
@@ -361,23 +361,23 @@ impl<'a> Packet<'a> {
     /// This corresponds to the `ciaddr` field in the DHCP specification. According to it,
     /// this field is “only filled in if client is in `BOUND`, `RENEW` or `REBINDING` state
     /// and can respond to ARP requests”.
-    pub fn client_ip(&self) -> Ipv4Address {
-        Ipv4Address::from_octets(self.buffer[field::CIADDR].try_into().unwrap())
+    pub fn client_ip(&self) -> Ipv4Addr {
+        Ipv4Addr::from_octets(self.buffer[field::CIADDR].try_into().unwrap())
     }
 
     /// Return the value of the `yiaddr` field, zero if not set.
-    pub fn your_ip(&self) -> Ipv4Address {
-        Ipv4Address::from_octets(self.buffer[field::YIADDR].try_into().unwrap())
+    pub fn your_ip(&self) -> Ipv4Addr {
+        Ipv4Addr::from_octets(self.buffer[field::YIADDR].try_into().unwrap())
     }
 
     /// Return the value of the `siaddr` field, zero if not set.
-    pub fn server_ip(&self) -> Ipv4Address {
-        Ipv4Address::from_octets(self.buffer[field::SIADDR].try_into().unwrap())
+    pub fn server_ip(&self) -> Ipv4Addr {
+        Ipv4Addr::from_octets(self.buffer[field::SIADDR].try_into().unwrap())
     }
 
     /// Return the value of the `giaddr` field, zero if not set.
-    pub fn relay_agent_ip(&self) -> Ipv4Address {
-        Ipv4Address::from_octets(self.buffer[field::GIADDR].try_into().unwrap())
+    pub fn relay_agent_ip(&self) -> Ipv4Addr {
+        Ipv4Addr::from_octets(self.buffer[field::GIADDR].try_into().unwrap())
     }
 
     /// Return the flags field.
@@ -539,22 +539,22 @@ impl<'a> Packet<'a> {
     /// This corresponds to the `ciaddr` field in the DHCP specification. According to it,
     /// this field is “only filled in if client is in `BOUND`, `RENEW` or `REBINDING` state
     /// and can respond to ARP requests”.
-    pub fn set_client_ip(&mut self, value: Ipv4Address) {
+    pub fn set_client_ip(&mut self, value: Ipv4Addr) {
         self.buffer[field::CIADDR].copy_from_slice(&value.octets());
     }
 
     /// Set the value of the `yiaddr` field.
-    pub fn set_your_ip(&mut self, value: Ipv4Address) {
+    pub fn set_your_ip(&mut self, value: Ipv4Addr) {
         self.buffer[field::YIADDR].copy_from_slice(&value.octets());
     }
 
     /// Set the value of the `siaddr` field.
-    pub fn set_server_ip(&mut self, value: Ipv4Address) {
+    pub fn set_server_ip(&mut self, value: Ipv4Addr) {
         self.buffer[field::SIADDR].copy_from_slice(&value.octets());
     }
 
     /// Set the value of the `giaddr` field.
-    pub fn set_relay_agent_ip(&mut self, value: Ipv4Address) {
+    pub fn set_relay_agent_ip(&mut self, value: Ipv4Addr) {
         self.buffer[field::GIADDR].copy_from_slice(&value.octets());
     }
 
@@ -614,7 +614,7 @@ mod test {
         0x00, 0x00, 0x00, 0x00, 0x00,
     ];
 
-    const IP_NULL: Ipv4Address = Ipv4Address::new(0, 0, 0, 0);
+    const IP_NULL: Ipv4Addr = Ipv4Addr::new(0, 0, 0, 0);
     const CLIENT_MAC: EthernetAddress = EthernetAddress([0x0, 0x0b, 0x82, 0x01, 0xfc, 0x42]);
     const DHCP_SIZE: u16 = 1500;
 

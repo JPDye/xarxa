@@ -12,7 +12,7 @@ use crate::wire::{IPV4_HEADER_LEN, Icmpv4DstUnreachable, Icmpv4Message, Ipv4Pack
 #[cfg(all(feature = "ipv6", any(feature = "udp", feature = "tcp")))]
 use crate::wire::{IPV6_HEADER_LEN, Icmpv6DstUnreachable, Icmpv6Message, Ipv6ExtHeader, Ipv6Packet};
 #[cfg(any(feature = "udp", feature = "tcp"))]
-use crate::wire::{IpAddress, IpProtocol, IpVersion};
+use crate::wire::{IpAddr, IpProtocol, IpVersion};
 
 impl IcmpError {
     /// Condense an ICMPv4 error message's type and code, `None` if the message is
@@ -66,8 +66,8 @@ impl IcmpError {
 /// its destination the remote end.
 #[cfg(any(feature = "udp", feature = "tcp"))]
 pub(crate) struct QuotedPacket {
-    pub src_addr: IpAddress,
-    pub dst_addr: IpAddress,
+    pub src_addr: IpAddr,
+    pub dst_addr: IpAddr,
     pub protocol: IpProtocol,
     pub src_port: u16,
     pub dst_port: u16,
@@ -86,43 +86,42 @@ pub(crate) struct QuotedPacket {
 /// identify one.
 #[cfg(any(feature = "udp", feature = "tcp"))]
 pub(crate) fn parse_quoted_packet(quote: &mut [u8]) -> Option<QuotedPacket> {
-    let (src_addr, dst_addr, protocol, l4_offset): (IpAddress, IpAddress, _, _) =
-        match IpVersion::of_packet(quote).ok()? {
-            #[cfg(feature = "ipv4")]
-            IpVersion::Ipv4 => {
-                if quote.len() < IPV4_HEADER_LEN {
-                    return None;
-                }
-                let packet = Ipv4Packet::new_unchecked(quote);
-                let header_len = packet.header_len() as usize;
-                if header_len < IPV4_HEADER_LEN {
-                    return None;
-                }
-                (
-                    packet.src_addr().into(),
-                    packet.dst_addr().into(),
-                    packet.next_header(),
-                    header_len,
-                )
+    let (src_addr, dst_addr, protocol, l4_offset): (IpAddr, IpAddr, _, _) = match IpVersion::of_packet(quote).ok()? {
+        #[cfg(feature = "ipv4")]
+        IpVersion::V4 => {
+            if quote.len() < IPV4_HEADER_LEN {
+                return None;
             }
-            #[cfg(feature = "ipv6")]
-            IpVersion::Ipv6 => {
-                if quote.len() < IPV6_HEADER_LEN {
-                    return None;
-                }
-                let packet = Ipv6Packet::new_unchecked(quote);
-                let src_addr = packet.src_addr();
-                let dst_addr = packet.dst_addr();
-                let mut protocol = packet.next_header();
-                let mut l4_offset = IPV6_HEADER_LEN;
-                if protocol == IpProtocol::HopByHop {
-                    let ext = Ipv6ExtHeader::new_checked(&quote[IPV6_HEADER_LEN..]).ok()?;
-                    protocol = ext.next_header();
-                    l4_offset += ext.header_len();
-                }
-                (src_addr.into(), dst_addr.into(), protocol, l4_offset)
+            let packet = Ipv4Packet::new_unchecked(quote);
+            let header_len = packet.header_len() as usize;
+            if header_len < IPV4_HEADER_LEN {
+                return None;
             }
-        };
+            (
+                packet.src_addr().into(),
+                packet.dst_addr().into(),
+                packet.next_header(),
+                header_len,
+            )
+        }
+        #[cfg(feature = "ipv6")]
+        IpVersion::V6 => {
+            if quote.len() < IPV6_HEADER_LEN {
+                return None;
+            }
+            let packet = Ipv6Packet::new_unchecked(quote);
+            let src_addr = packet.src_addr();
+            let dst_addr = packet.dst_addr();
+            let mut protocol = packet.next_header();
+            let mut l4_offset = IPV6_HEADER_LEN;
+            if protocol == IpProtocol::HopByHop {
+                let ext = Ipv6ExtHeader::new_checked(&quote[IPV6_HEADER_LEN..]).ok()?;
+                protocol = ext.next_header();
+                l4_offset += ext.header_len();
+            }
+            (src_addr.into(), dst_addr.into(), protocol, l4_offset)
+        }
+    };
 
     // The ports (and TCP sequence number) sit in the first 8 bytes of the quoted
     // L4 header, for both UDP and TCP.
@@ -141,7 +140,7 @@ pub(crate) fn parse_quoted_packet(quote: &mut [u8]) -> Option<QuotedPacket> {
 #[cfg(all(test, feature = "ipv4", feature = "ipv6", any(feature = "udp", feature = "tcp")))]
 mod test {
     use super::*;
-    use crate::wire::{Ipv4Address, Ipv6Address};
+    use crate::wire::{Ipv4Addr, Ipv6Addr};
 
     #[test]
     fn test_mapping() {
@@ -175,8 +174,8 @@ mod test {
             ip.set_version(4);
             ip.set_header_len(IPV4_HEADER_LEN as u8);
             ip.set_next_header(IpProtocol::Udp);
-            ip.set_src_addr(Ipv4Address::new(10, 0, 0, 1));
-            ip.set_dst_addr(Ipv4Address::new(10, 0, 0, 2));
+            ip.set_src_addr(Ipv4Addr::new(10, 0, 0, 1));
+            ip.set_dst_addr(Ipv4Addr::new(10, 0, 0, 2));
         }
         assert!(parse_quoted_packet(&mut quote).is_none());
 
@@ -192,8 +191,8 @@ mod test {
             let mut ip = Ipv6Packet::new_unchecked(&mut quote[..]);
             ip.set_version(6);
             ip.set_next_header(IpProtocol::HopByHop);
-            ip.set_src_addr(Ipv6Address::new(0xfdaa, 0, 0, 0, 0, 0, 0, 1));
-            ip.set_dst_addr(Ipv6Address::new(0xfdaa, 0, 0, 0, 0, 0, 0, 2));
+            ip.set_src_addr(Ipv6Addr::new(0xfdaa, 0, 0, 0, 0, 0, 0, 1));
+            ip.set_dst_addr(Ipv6Addr::new(0xfdaa, 0, 0, 0, 0, 0, 0, 2));
         }
         // Hop-by-hop: next header UDP, length 0, PadN(4).
         quote[IPV6_HEADER_LEN..IPV6_HEADER_LEN + 8].copy_from_slice(&[0x11, 0x00, 0x01, 0x04, 0, 0, 0, 0]);

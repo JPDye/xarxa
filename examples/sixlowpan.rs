@@ -51,7 +51,7 @@ use std::os::unix::io::AsRawFd;
 use xarxa::Stack;
 use xarxa::driver_impls::{RawSocketDriver, wait};
 use xarxa::time::Instant;
-use xarxa::wire::{HardwareAddress, Ieee802154Address, Ieee802154Pan, IpListenEndpoint};
+use xarxa::wire::{HardwareAddress, Ieee802154Address, Ieee802154Pan, ListenSocketAddr};
 
 const UDP_PORT: u16 = 6969;
 const TCP_PORT: u16 = 50000;
@@ -79,7 +79,7 @@ fn main() {
     let udp_handle = stack.add_udp_socket().unwrap();
     stack
         .udp_socket(udp_handle)
-        .bind(UDP_PORT, IpListenEndpoint::UNSPECIFIED)
+        .bind(UDP_PORT, ListenSocketAddr::UNSPECIFIED)
         .unwrap();
 
     let listener = stack.add_tcp_listener().unwrap();
