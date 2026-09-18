@@ -7,8 +7,12 @@ use crate::config::RAW_SOCKET_COUNT;
 use crate::config::TCP_LISTENER_COUNT;
 #[cfg(feature = "tcp")]
 use crate::config::TCP_SOCKET_COUNT;
+#[cfg(feature = "packetmeta-timestamp")]
+use crate::config::TX_TIMESTAMP_QUEUE_COUNT;
 #[cfg(feature = "udp")]
 use crate::config::UDP_SOCKET_COUNT;
+#[cfg(feature = "packetmeta-timestamp")]
+use crate::driver::TxTimestamp;
 use crate::driver::{ChecksumCapabilities, Driver, PacketBuf};
 #[cfg(any(feature = "udp", feature = "_raw", feature = "tcp"))]
 use crate::error::Full;
@@ -31,6 +35,8 @@ use crate::raw::{RawHandle, RawSocket, RawSocketIter, RawSocketState};
 #[cfg(any(feature = "ipv4-reassembly", feature = "sixlowpan-reassembly"))]
 use crate::reassembly::FragmentsBuffer;
 use crate::route::Routes;
+#[cfg(feature = "packetmeta-timestamp")]
+use crate::storage::BoundedDeque;
 use crate::storage::{MaybeBox, Slab, Vec};
 #[cfg(feature = "tcp")]
 use crate::tcp::{SocketBuffer, TcpHandle, TcpRepr, TcpSocket, TcpSocketIter, TcpSocketState};
@@ -71,6 +77,8 @@ pub(crate) struct Sockets<'d> {
 /// Separate from `Stack` so that its methods can borrow an interface from `Stack::ifaces`
 /// while taking `&mut self`.
 pub(crate) struct StackInner {
+    #[cfg(feature = "packetmeta-timestamp")]
+    pub(crate) tx_timestamps: TxTimestampQueue,
     pub(crate) now: Instant,
     #[cfg_attr(not(any(feature = "udp", feature = "tcp")), allow(dead_code))]
     pub(crate) rand: Rand,
@@ -93,6 +101,33 @@ pub(crate) struct StackInner {
 /// Maximum hostname length, in bytes. The DNS label limit (RFC 1035 §2.3.4).
 #[cfg(feature = "hostname")]
 const HOSTNAME_MAX_LEN: usize = 63;
+
+#[cfg(feature = "packetmeta-timestamp")]
+pub(crate) struct TxTimestampQueue {
+    queue: BoundedDeque<TxTimestamp, TX_TIMESTAMP_QUEUE_COUNT>,
+    #[cfg(feature = "async")]
+    waker: crate::waker::WakerRegistration,
+}
+
+#[cfg(feature = "packetmeta-timestamp")]
+impl TxTimestampQueue {
+    fn new() -> Self {
+        Self {
+            queue: BoundedDeque::new(),
+            #[cfg(feature = "async")]
+            waker: crate::waker::WakerRegistration::new(),
+        }
+    }
+
+    pub(crate) fn push(&mut self, timestamp: TxTimestamp) {
+        if self.queue.push_back(timestamp).is_err() {
+            trace!("tx timestamp queue full, dropping timestamp");
+            return;
+        }
+        #[cfg(feature = "async")]
+        self.waker.wake();
+    }
+}
 
 impl StackInner {
     /// Note that a socket send was held back for lack of a packet buffer or
@@ -462,6 +497,8 @@ impl<'d> Stack<'d> {
 
         Self {
             inner: StackInner {
+                #[cfg(feature = "packetmeta-timestamp")]
+                tx_timestamps: TxTimestampQueue::new(),
                 now: Instant::ZERO,
                 rand,
                 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
@@ -629,6 +666,36 @@ impl<'d> Stack<'d> {
         #[cfg(feature = "medium-ethernet")]
         self.ifaces.get_mut(index).sync_multicast_filter();
         Ok(IfaceHandle::new(index))
+    }
+
+    /// Take the timestamp of an already-transmitted packet, sent with
+    /// [`PacketMeta::request_timestamp`](crate::driver::PacketMeta::request_timestamp) set.
+    ///
+    /// The timestamps of every interface land in one queue, which [`Self::poll`] fills
+    /// from the drivers. This only reads it, so poll first.
+    ///
+    /// Timestamps arrive an arbitrary time after the packet was sent, possibly out of
+    /// order, and possibly never: a device may not support transmit timestamping, may
+    /// have run out of timestamp slots, or the queue may have been full (its capacity
+    /// is [`TX_TIMESTAMP_QUEUE_COUNT`](crate::config::TX_TIMESTAMP_QUEUE_COUNT)). Time
+    /// out waiting for one rather than expecting it.
+    ///
+    /// The queue has one consumer, so the packet ids it reports back must be unique
+    /// across everything the application sends, on every interface. Don't reuse an id
+    /// while a timestamp for the old packet can still arrive. Removing an interface
+    /// does not drop the timestamps it already queued.
+    #[cfg(feature = "packetmeta-timestamp")]
+    pub fn poll_tx_timestamp(&mut self) -> Option<TxTimestamp> {
+        self.inner.tx_timestamps.queue.pop_front()
+    }
+
+    /// Register a waker, woken when a TX timestamp is queued.
+    ///
+    /// Register it before checking [`Self::poll_tx_timestamp`]. Only one waker is
+    /// kept: registering another replaces it.
+    #[cfg(all(feature = "packetmeta-timestamp", feature = "async"))]
+    pub fn register_tx_timestamp_waker(&mut self, waker: &core::task::Waker) {
+        self.inner.tx_timestamps.waker.register(waker);
     }
 
     /// Borrow an interface from the stack.
@@ -939,6 +1006,12 @@ impl<'d> Stack<'d> {
     ///   a packet is received or an operation is done on the Stack, a socket or an interface.
     pub fn poll(&mut self, timestamp: Instant) -> Instant {
         self.inner.now = timestamp;
+
+        // Collect the transmit timestamps the drivers have ready for us.
+        #[cfg(feature = "packetmeta-timestamp")]
+        for (_, iface) in self.ifaces.iter_mut() {
+            iface.drain_tx_timestamps(&mut self.inner.tx_timestamps);
+        }
 
         // Drop queued packets whose neighbor resolution timed out.
         #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
@@ -4313,14 +4386,107 @@ pub(crate) mod test {
         assert!(sent.borrow()[0].request_timestamp);
 
         // ... and the timestamp comes back out of band, tagged with the id.
+        stack.poll(Instant::from_secs(0));
         assert_eq!(
-            stack.iface(iface).poll_tx_timestamp(),
+            stack.poll_tx_timestamp(),
             Some(TxTimestamp {
                 id: 0x2222,
                 timestamp: TX_STAMP,
             })
         );
-        assert_eq!(stack.iface(iface).poll_tx_timestamp(), None);
+        assert_eq!(stack.poll_tx_timestamp(), None);
+    }
+
+    #[test]
+    #[cfg(all(feature = "packetmeta-timestamp", feature = "async"))]
+    fn test_tx_timestamp_queue() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::task::{Wake, Waker};
+
+        use crate::config::TX_TIMESTAMP_QUEUE_COUNT;
+        use crate::driver::{Timestamp, TxTimestamp};
+
+        const STAMP_A: Timestamp = Timestamp::from_seconds_and_nanos(1, 0);
+        const STAMP_B: Timestamp = Timestamp::from_seconds_and_nanos(2, 0);
+        const OTHER_V4: Ipv4Addr = Ipv4Addr::new(192, 168, 2, 1);
+        const OTHER_REMOTE_V4: Ipv4Addr = Ipv4Addr::new(192, 168, 2, 2);
+
+        #[derive(Default)]
+        struct WakeCount(AtomicUsize);
+        impl Wake for WakeCount {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let mut stack = Stack::new(1);
+        let iface_a = TestDevice::new(Medium::Ip)
+            .with_tx_stamp(STAMP_A)
+            .install(&mut stack, HardwareAddress::Ip);
+        let iface_b = TestDevice::new(Medium::Ip)
+            .with_tx_stamp(STAMP_B)
+            .install(&mut stack, HardwareAddress::Ip);
+        stack
+            .iface(iface_a)
+            .add_ip_addr(IpCidr::new(OUR_V4.into(), 24))
+            .unwrap();
+        stack
+            .iface(iface_b)
+            .add_ip_addr(IpCidr::new(OTHER_V4.into(), 24))
+            .unwrap();
+        let socket = stack.add_udp_socket().unwrap();
+        stack
+            .udp_socket(socket)
+            .bind(319, ListenSocketAddr::UNSPECIFIED)
+            .unwrap();
+
+        let send = |stack: &mut Stack<'_>, dst: Ipv4Addr, id: u32| {
+            let mut meta: crate::udp::UdpMetadata = SocketAddr::new(dst.into(), 319).into();
+            meta.meta.id = id;
+            meta.meta.request_timestamp = true;
+            stack.udp_socket(socket).send_slice(b"delay_req", meta).unwrap();
+        };
+
+        // Both interfaces feed the one queue, and the consumer is woken once per poll.
+        let wakes = Arc::new(WakeCount::default());
+        stack.register_tx_timestamp_waker(&Waker::from(wakes.clone()));
+        send(&mut stack, REMOTE_V4, 1);
+        send(&mut stack, OTHER_REMOTE_V4, 2);
+        stack.poll(Instant::from_secs(0));
+        assert_eq!(wakes.0.swap(0, Ordering::Relaxed), 1);
+        assert_eq!(
+            stack.poll_tx_timestamp(),
+            Some(TxTimestamp {
+                id: 1,
+                timestamp: STAMP_A
+            })
+        );
+        assert_eq!(
+            stack.poll_tx_timestamp(),
+            Some(TxTimestamp {
+                id: 2,
+                timestamp: STAMP_B
+            })
+        );
+        assert_eq!(stack.poll_tx_timestamp(), None);
+
+        // A full queue drops the timestamps that don't fit, and sending keeps working.
+        for id in 0..TX_TIMESTAMP_QUEUE_COUNT + 2 {
+            send(&mut stack, REMOTE_V4, id as u32);
+        }
+        stack.poll(Instant::from_secs(0));
+        for id in 0..TX_TIMESTAMP_QUEUE_COUNT {
+            assert_eq!(stack.poll_tx_timestamp().unwrap().id, id as u32);
+        }
+        assert_eq!(stack.poll_tx_timestamp(), None);
+
+        // Removing an interface leaves its queued timestamps for the consumer to discard.
+        send(&mut stack, REMOTE_V4, 7);
+        stack.poll(Instant::from_secs(0));
+        stack.remove_iface(iface_a);
+        assert_eq!(stack.poll_tx_timestamp().unwrap().id, 7);
+        assert_eq!(stack.poll_tx_timestamp(), None);
     }
 
     #[test]
