@@ -1,11 +1,9 @@
 //! Network interfaces.
 //!
 //! An interface is a [`Driver`] added to a [`Stack`], together with its
-//! configuration: hardware address, IP addresses, and whatever address
-//! autoconfiguration is turned on for it.
+//! configuration.
 //!
-//! The two autoconfiguration methods are [`dhcpv4`] and [`slaac`], each turned
-//! on per interface and driven by [`Stack::poll`].
+//! Interfaces can be configured manually, or automatically with [`dhcpv4`] or [`slaac`].
 //!
 //! An interface can also hand out addresses itself, as a [`dhcpv4_server`].
 
@@ -333,8 +331,8 @@ impl<'d> Iface<'_, 'd> {
     /// is accepted, but the stack can not put it in NDISC link-layer address
     /// options, so neighbor discovery does not work with one.
     ///
-    /// Errors:
-    /// - `MediumMismatch` if the address is not of the kind the interface's
+    /// # Errors
+    /// - `MediumMismatch`: if the address is not of the kind the interface's
     ///   medium uses. The interface is left unchanged.
     pub fn set_hardware_addr(&mut self, addr: HardwareAddress) -> Result<(), MediumMismatch> {
         if addr.medium() != self.state().medium() {
@@ -376,9 +374,9 @@ impl<'d> Iface<'_, 'd> {
     /// destination's subnet, so ordering only matters between addresses of the same
     /// subnet.
     ///
-    /// Errors:
-    /// - `NotUnicast` if the address is not unicast.
-    /// - `Full` if the interface has no room for another address. Only possible
+    /// # Errors
+    /// - `NotUnicast`: if the address is not unicast.
+    /// - `Full`: if the interface has no room for another address. Only possible
     ///   without the `alloc` feature, where the limit is
     ///   [`IFACE_ADDR_COUNT`].
     pub fn add_ip_addr(&mut self, cidr: IpCidr) -> Result<Option<IpCidr>, AddrError> {
@@ -420,9 +418,9 @@ impl<'d> Iface<'_, 'd> {
     ///
     /// On error the interface is left unchanged.
     ///
-    /// Errors:
-    /// - `NotUnicast` if any of the addresses is not unicast.
-    /// - `Full` if the addresses do not fit. Only possible without the `alloc`
+    /// # Errors
+    /// - `NotUnicast`: if any of the addresses is not unicast.
+    /// - `Full`: if the addresses do not fit. Only possible without the `alloc`
     ///   feature, where the limit is [`IFACE_ADDR_COUNT`].
     pub fn set_ip_addrs(&mut self, new_addrs: impl IntoIterator<Item = IpCidr>) -> Result<(), AddrError> {
         #[allow(unused_mut)]
@@ -485,8 +483,8 @@ impl<'d> Iface<'_, 'd> {
     /// turned off. Turning it on when it is already on restarts it with the new
     /// configuration.
     ///
-    /// Errors:
-    /// - `MediumMismatch` if the interface is not an Ethernet interface.
+    /// # Errors
+    /// - `MediumMismatch`: if the interface is not an Ethernet interface.
     #[cfg(feature = "dhcpv4")]
     pub fn set_dhcpv4(&mut self, config: Option<self::dhcpv4::DhcpConfig>) -> Result<(), MediumMismatch> {
         if !matches!(self.state().hardware_addr, HardwareAddress::Ethernet(_)) {
@@ -509,8 +507,8 @@ impl<'d> Iface<'_, 'd> {
     /// lifetime runs out or when SLAAC is turned off. Turning it on when it is
     /// already on restarts it.
     ///
-    /// Errors:
-    /// - `MediumMismatch` if the interface is not an Ethernet or IEEE 802.15.4
+    /// # Errors
+    /// - `MediumMismatch`: if the interface is not an Ethernet or IEEE 802.15.4
     ///   interface.
     #[cfg(feature = "slaac")]
     pub fn set_slaac(&mut self, config: Option<self::slaac::SlaacConfig>) -> Result<(), MediumMismatch> {
@@ -570,9 +568,9 @@ impl<'d> Iface<'_, 'd> {
     ///
     /// On error the server is left as it was.
     ///
-    /// Errors:
-    /// - `MediumMismatch` if the interface is not an Ethernet interface.
-    /// - `InvalidPool` if `pool_end` is below `pool_start`.
+    /// # Errors
+    /// - `MediumMismatch`: if the interface is not an Ethernet interface.
+    /// - `InvalidPool`: if `pool_end` is below `pool_start`.
     #[cfg(feature = "dhcpv4-server")]
     pub fn set_dhcpv4_server(
         &mut self,

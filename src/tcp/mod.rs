@@ -2572,8 +2572,8 @@ impl<'d> TcpSocket<'_, 'd> {
     /// A socket without an explicitly set hop limit value uses the default [IANA recommended]
     /// value (64).
     ///
-    /// Errors:
-    /// - `InvalidHopLimit` if the hop limit is `Some(0)`. A host must not send a
+    /// # Errors
+    /// - `InvalidHopLimit`: if the hop limit is `Some(0)`. A host must not send a
     ///   packet with a hop limit of zero ([RFC 1122 § 3.2.1.7]). The socket is
     ///   left unchanged.
     ///
@@ -2601,7 +2601,8 @@ impl<'d> TcpSocket<'_, 'd> {
     /// Two sockets with otherwise identical tuples may coexist if they are
     /// bound to different interfaces.
     ///
-    /// Returns `Err(ConnectError::InvalidState)` if the socket is open.
+    /// # Errors
+    /// - `InvalidState`: if the socket is open.
     #[cfg(feature = "iface-bind")]
     pub fn bind_to_iface(&mut self, iface: Option<IfaceHandle>) -> Result<(), ConnectError> {
         if self.is_open() {
@@ -2654,11 +2655,15 @@ impl<'d> TcpSocket<'_, 'd> {
     /// listener is fine too, since connected sockets are matched before
     /// listeners. Ephemeral allocation applies the same rule, and an explicit
     /// local address that would duplicate another socket's tuple is rejected
-    /// with `Err(ConnectError::InUse)`.
+    /// with `InUse`.
     ///
-    /// This function returns an error if the socket was open (see
-    /// [is_open](#method.is_open)). It also returns an error if the remote port
-    /// is zero, or if the remote address is unspecified.
+    /// # Errors
+    /// - `InvalidState`: if the socket is open (see
+    ///   [is_open](#method.is_open)).
+    /// - `Unaddressable`: if the remote port is zero, or the remote address is
+    ///   unspecified.
+    /// - `NoFreePorts`: if the ephemeral range is exhausted.
+    /// - `InUse`: if another TCP socket already holds the identical 4-tuple.
     pub fn connect(
         &mut self,
         remote: impl Into<SocketAddr>,
@@ -2747,8 +2752,8 @@ impl<'d> TcpSocket<'_, 'd> {
     /// is set to the listener's binding. Other configuration (hop limit,
     /// timeout, keep-alive, Nagle, ACK delay) is left unchanged.
     ///
-    /// Errors:
-    /// - `InvalidState` if the socket is not closed.
+    /// # Errors
+    /// - `InvalidState`: if the socket is not closed.
     #[cfg(feature = "tcp-listener")]
     pub fn accept(&mut self, token: AcceptToken) -> Result<(), AcceptError> {
         if self.is_open() {
@@ -2931,8 +2936,9 @@ impl<'d> TcpSocket<'_, 'd> {
     /// Call `f` with the largest contiguous slice of octets in the transmit buffer,
     /// and enqueue the amount of elements returned by `f`.
     ///
-    /// This function returns `Err(Error::Illegal)` if the transmit half of
-    /// the connection is not open; see [may_send](#method.may_send).
+    /// # Errors
+    /// - `InvalidState`: if the transmit half of the connection is not open; see
+    ///   [may_send](#method.may_send).
     pub fn send<'b, R>(&'b mut self, f: impl FnOnce(&'b mut [u8]) -> (usize, R)) -> Result<R, SendError> {
         self.send_impl(|tx_buffer| tx_buffer.enqueue_many_with(f))
     }
@@ -2943,6 +2949,10 @@ impl<'d> TcpSocket<'_, 'd> {
     /// by the amount of free space in the transmit buffer; down to zero.
     ///
     /// See also [send](#method.send).
+    ///
+    /// # Errors
+    /// - `InvalidState`: if the transmit half of the connection is not open; see
+    ///   [may_send](#method.may_send).
     pub fn send_slice(&mut self, data: &[u8]) -> Result<usize, SendError> {
         self.send_impl(|tx_buffer| {
             let size = tx_buffer.enqueue_slice(data);
@@ -2980,13 +2990,11 @@ impl<'d> TcpSocket<'_, 'd> {
     /// Call `f` with the largest contiguous slice of octets in the receive buffer,
     /// and dequeue the amount of elements returned by `f`.
     ///
-    /// This function errors if the receive half of the connection is not open.
-    ///
-    /// If the receive half has been gracefully closed (with a FIN packet), `Err(Error::Finished)`
-    /// is returned. In this case, the previously received data is guaranteed to be complete.
-    ///
-    /// In all other cases, `Err(Error::Illegal)` is returned and previously received data (if any)
-    /// may be incomplete (truncated).
+    /// # Errors
+    /// - `Finished`: if the receive half was gracefully closed (with a FIN
+    ///   packet). The previously received data is complete.
+    /// - `InvalidState`: if the receive half is not open for any other reason.
+    ///   The previously received data may be incomplete (truncated).
     pub fn recv<'b, R>(&'b mut self, f: impl FnOnce(&'b mut [u8]) -> (usize, R)) -> Result<R, RecvError> {
         self.recv_impl(|rx_buffer| rx_buffer.dequeue_many_with(f))
     }
@@ -2997,6 +3005,11 @@ impl<'d> TcpSocket<'_, 'd> {
     /// by the amount of occupied space in the receive buffer; down to zero.
     ///
     /// See also [recv](#method.recv).
+    ///
+    /// # Errors
+    /// - `Finished`: if the receive half was gracefully closed (with a FIN
+    ///   packet).
+    /// - `InvalidState`: if the receive half is not open for any other reason.
     pub fn recv_slice(&mut self, data: &mut [u8]) -> Result<usize, RecvError> {
         self.recv_impl(|rx_buffer| {
             let size = rx_buffer.dequeue_slice(data);

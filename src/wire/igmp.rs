@@ -68,7 +68,9 @@ impl<'a> Packet<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Malformed)` if the buffer is too short.
+    ///
+    /// # Errors
+    /// - `Malformed`: if the buffer is too short.
     pub fn check_len(&self) -> Result<(), Malformed> {
         let len = self.buffer.len();
         if len < field::GROUP_ADDRESS.end {

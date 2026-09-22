@@ -226,9 +226,10 @@ pub trait Driver {
     /// A registered waker is woken just one. The main loop must re-register it if
     /// it wants to be woken again.
     ///
-    /// Drivers that cannot wake anything return `Err(NotSupported)`, which is the
-    /// default implementation. Such a driver can only be polled, so a caller that
-    /// needs to sleep until the driver has something new cannot use it.
+    /// # Errors
+    /// - `NotSupported`: if the driver cannot wake anything. This is the default
+    ///   implementation. Such a driver can only be polled, so a caller that
+    ///   needs to sleep until the driver has something new cannot use it.
     #[cfg(feature = "async")]
     fn register_waker(&mut self, waker: &Waker) -> Result<(), NotSupported> {
         let _ = waker;
@@ -259,8 +260,6 @@ pub trait Driver {
     /// Queue a frame for transmission, transferring ownership of the buffer to the driver.
     ///
     /// The driver holds the buffer until the hardware is done with it, then drops it.
-    /// If the frame cannot be queued right now (device busy or queue full), the buffer
-    /// is handed back in the `Err` variant.
     ///
     /// The buffer's [`PacketMeta`] is whatever the sending socket attached to the
     /// packet (default for packets the stack generates itself). A driver that
@@ -268,6 +267,10 @@ pub trait Driver {
     /// [`request_timestamp`](PacketMeta::request_timestamp) is set, and reports
     /// the result from [`poll_tx_timestamp`](Self::poll_tx_timestamp) tagged with the
     /// packet's [`id`](PacketMeta::id).
+    ///
+    /// # Errors
+    /// - `PacketBuf`: the buffer itself, handed back if the frame cannot be
+    ///   queued right now (device busy or queue full).
     fn transmit(&mut self, buf: PacketBuf) -> Result<(), PacketBuf>;
 
     /// Poll for the timestamp of an already-transmitted packet.

@@ -107,7 +107,10 @@ impl<'d, T> RingBuffer<'d, T> {
 /// and boundary conditions (empty/full) are errors.
 impl<T> RingBuffer<'_, T> {
     /// Call `f` with a single buffer element, and enqueue the element if `f`
-    /// returns successfully, or return `Err(Full)` if the buffer is full.
+    /// returns successfully.
+    ///
+    /// # Errors
+    /// - `Full`: if the buffer is full.
     pub fn enqueue_one_with<'b, R, E>(
         &'b mut self,
         f: impl FnOnce(&'b mut T) -> Result<R, E>,
@@ -124,16 +127,21 @@ impl<T> RingBuffer<'_, T> {
         Ok(res)
     }
 
-    /// Enqueue a single element into the buffer, and return a reference to it,
-    /// or return `Err(Full)` if the buffer is full.
+    /// Enqueue a single element into the buffer, and return a reference to it.
     ///
     /// This function is a shortcut for `ring_buf.enqueue_one_with(Ok)`.
+    ///
+    /// # Errors
+    /// - `Full`: if the buffer is full.
     pub fn enqueue_one(&mut self) -> Result<&mut T, Full> {
         self.enqueue_one_with(Ok)?
     }
 
     /// Call `f` with a single buffer element, and dequeue the element if `f`
-    /// returns successfully, or return `Err(Empty)` if the buffer is empty.
+    /// returns successfully.
+    ///
+    /// # Errors
+    /// - `Empty`: if the buffer is empty.
     pub fn dequeue_one_with<'b, R, E>(
         &'b mut self,
         f: impl FnOnce(&'b mut T) -> Result<R, E>,
@@ -152,10 +160,12 @@ impl<T> RingBuffer<'_, T> {
         Ok(res)
     }
 
-    /// Dequeue an element from the buffer, and return a reference to it,
-    /// or return `Err(Empty)` if the buffer is empty.
+    /// Dequeue an element from the buffer, and return a reference to it.
     ///
     /// This function is a shortcut for `ring_buf.dequeue_one_with(Ok)`.
+    ///
+    /// # Errors
+    /// - `Empty`: if the buffer is empty.
     pub fn dequeue_one(&mut self) -> Result<&mut T, Empty> {
         self.dequeue_one_with(Ok)?
     }

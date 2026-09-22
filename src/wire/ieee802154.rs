@@ -296,8 +296,8 @@ impl Repr {
     /// Returns the header and its length, the auxiliary security header
     /// included. The payload starts at that offset.
     ///
-    /// Errors:
-    /// - `Malformed` if the buffer is shorter than the header, or longer than 127
+    /// # Errors
+    /// - `Malformed`: if the buffer is shorter than the header, or longer than 127
     ///   bytes, or the frame version or an addressing mode is unknown.
     pub fn parse(buf: &[u8]) -> Result<(Repr, usize), Malformed> {
         // A frame is at most 127 bytes, and starts with the frame control

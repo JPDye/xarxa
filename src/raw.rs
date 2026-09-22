@@ -261,7 +261,8 @@ impl RawSocket<'_, '_> {
     /// The socket must be unbound (no mode set). The binding is kept across
     /// [`close`](Self::close).
     ///
-    /// Returns `Err(BindError::InvalidState)` if the socket is bound.
+    /// # Errors
+    /// - `InvalidState`: if the socket is bound.
     #[cfg(feature = "iface-bind")]
     pub fn bind_to_iface(&mut self, iface: Option<IfaceHandle>) -> Result<(), BindError> {
         if self.is_open() {
@@ -281,11 +282,12 @@ impl RawSocket<'_, '_> {
 
     /// Bind the socket to the given mode.
     ///
-    /// Returns `Err(BindError::InvalidState)` if the socket is already bound (see
-    /// [is_open](#method.is_open)), and `Err(BindError::InvalidMedium)` if an
-    /// Ethernet-mode bind is made on a socket bound (with `bind_to_iface`,
-    /// feature `iface-bind`) to an interface whose medium is not
-    /// [`Medium::Ethernet`].
+    /// # Errors
+    /// - `InvalidState`: if the socket is already bound (see
+    ///   [is_open](#method.is_open)).
+    /// - `InvalidMedium`: if an Ethernet-mode bind is made on a socket bound
+    ///   (with `bind_to_iface`, feature `iface-bind`) to an interface whose
+    ///   medium is not [`Medium::Ethernet`].
     ///
     /// # Panics
     /// Panics if the socket is bound to a stale interface handle.
@@ -376,8 +378,9 @@ impl RawSocket<'_, '_> {
     /// mode), headers included, exactly as received. This is zero-copy: the
     /// returned value is the buffer the packet arrived in, and dropping it frees it.
     ///
-    /// Returns `Err(RecvError::InvalidState)` if the socket is not bound, and
-    /// `Err(RecvError::Exhausted)` if the RX queue is empty.
+    /// # Errors
+    /// - `InvalidState`: if the socket is not bound.
+    /// - `Exhausted`: if the RX queue is empty.
     pub fn recv(&mut self) -> Result<PacketBuf, RecvError> {
         if !self.is_open() {
             return Err(RecvError::InvalidState);
@@ -388,11 +391,13 @@ impl RawSocket<'_, '_> {
     /// Dequeue a received packet, copying it into the given slice, and return the
     /// number of octets copied.
     ///
-    /// **Note**: when the size of the provided buffer is smaller than the size of
-    /// the packet, the packet is dropped and `Err(RecvError::Truncated)` is
-    /// returned.
-    ///
     /// See also [recv](#method.recv).
+    ///
+    /// # Errors
+    /// - `InvalidState`: if the socket is not bound.
+    /// - `Exhausted`: if the RX queue is empty.
+    /// - `Truncated`: if `data` is smaller than the packet. The packet is
+    ///   dropped.
     pub fn recv_slice(&mut self, data: &mut [u8]) -> Result<usize, RecvError> {
         let packet = self.recv()?;
         if data.len() < packet.len() {
@@ -405,8 +410,9 @@ impl RawSocket<'_, '_> {
     /// Peek at the next received packet without dequeueing it, as a borrow into the
     /// queue.
     ///
-    /// Returns `Err(RecvError::InvalidState)` if the socket is not bound, and
-    /// `Err(RecvError::Exhausted)` if the RX queue is empty.
+    /// # Errors
+    /// - `InvalidState`: if the socket is not bound.
+    /// - `Exhausted`: if the RX queue is empty.
     pub fn peek(&self) -> Result<&[u8], RecvError> {
         if !self.is_open() {
             return Err(RecvError::InvalidState);
@@ -420,11 +426,13 @@ impl RawSocket<'_, '_> {
     /// Peek at the next received packet without dequeueing it, copying it into the
     /// given slice.
     ///
-    /// **Note**: when the size of the provided buffer is smaller than the size of
-    /// the packet, no data is copied and `Err(RecvError::Truncated)` is returned.
-    /// The packet stays in the queue.
-    ///
     /// See also [peek](#method.peek).
+    ///
+    /// # Errors
+    /// - `InvalidState`: if the socket is not bound.
+    /// - `Exhausted`: if the RX queue is empty.
+    /// - `Truncated`: if `data` is smaller than the packet. No data is copied
+    ///   and the packet stays in the queue.
     pub fn peek_slice(&self, data: &mut [u8]) -> Result<usize, RecvError> {
         let packet = self.peek()?;
         if data.len() < packet.len() {
@@ -472,16 +480,17 @@ impl RawSocket<'_, '_> {
     /// neighbor is unresolved, the packet is queued inside the stack and sent
     /// when resolution completes. This still counts as a successful send.
     ///
-    /// Returns `Err(SendError::InvalidState)` if the socket is not bound.
-    /// Returns `Err(SendError::Unaddressable)` if there is no route to the
-    /// packet's destination (IP mode) or no Ethernet interface to send on
-    /// (Ethernet mode).
-    /// Returns `Err(SendError::Malformed)` if the packet fails basic validation (too
-    /// short for an Ethernet header in Ethernet mode, malformed IP header in IP
-    /// mode), or does not match the socket's bind filters.
-    /// Returns `Err(SendError::BufferFull)` if the packet cannot fit in a packet
-    /// buffer.
-    /// Returns `Err(SendError::NoBuffer)` if every packet buffer is in use.
+    /// # Errors
+    /// - `InvalidState`: if the socket is not bound.
+    /// - `Unaddressable`: if there is no route to the packet's destination (IP
+    ///   mode) or no Ethernet interface to send on (Ethernet mode).
+    /// - `Malformed`: if the packet fails basic validation (too short for an
+    ///   Ethernet header in Ethernet mode, malformed IP header in IP mode), or
+    ///   does not match the socket's bind filters.
+    /// - `BufferFull`: if the packet cannot fit in a packet buffer.
+    /// - `NoBuffer`: if every packet buffer is in use.
+    /// - `DeviceBusy`: if the interface the packet would go out of has no room
+    ///   for it right now.
     ///
     /// # Panics
     /// Panics if the socket is bound to an interface that has been removed.

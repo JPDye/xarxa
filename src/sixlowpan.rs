@@ -115,8 +115,8 @@ impl Iface<'_, '_> {
     /// identifier are resolved with the context at that index. Sent packets
     /// never use contexts.
     ///
-    /// Errors:
-    /// - `Full` if the contexts do not fit. Only possible without the `alloc`
+    /// # Errors
+    /// - `Full`: if the contexts do not fit. Only possible without the `alloc`
     ///   feature, where the limit is
     ///   [`SIXLOWPAN_ADDRESS_CONTEXT_COUNT`].
     ///   The interface is left unchanged.

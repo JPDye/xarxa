@@ -20,8 +20,9 @@ pub enum Version {
 impl Version {
     /// Return the version of an IP packet stored in the provided buffer.
     ///
-    /// This function never returns `Ok(IpVersion::Unspecified)`; instead,
-    /// unknown versions result in `Err(Malformed)`.
+    /// # Errors
+    /// - `Malformed`: if the version is neither 4 nor 6, or the build has no
+    ///   feature for it.
     pub const fn of_packet(data: &[u8]) -> Result<Version, Malformed> {
         match data[0] >> 4 {
             #[cfg(feature = "ipv4")]

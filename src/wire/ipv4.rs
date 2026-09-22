@@ -240,13 +240,14 @@ impl<'a> Packet<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Malformed)` if the buffer is too short.
-    /// Returns `Err(Malformed)` if the header length is greater
-    /// than total length.
-    /// Returns `Err(Malformed)` if the header length is less than minimum allowed IHL
     ///
     /// The result of this check is invalidated by calling [set_header_len]
     /// and [set_total_len].
+    ///
+    /// # Errors
+    /// - `Malformed`: if the buffer is too short, if the header length is
+    ///   greater than the total length, or if the header length is less than
+    ///   the minimum allowed IHL.
     ///
     /// [set_header_len]: #method.set_header_len
     /// [set_total_len]: #method.set_total_len

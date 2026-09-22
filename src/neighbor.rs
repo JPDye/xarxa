@@ -318,8 +318,8 @@ impl NeighborCache {
     ///
     /// If the cache is full, another entry is evicted to make room.
     ///
-    /// Errors:
-    /// - `NotUnicast` if `addr` or `hardware_addr` is not unicast. The cache
+    /// # Errors
+    /// - `NotUnicast`: if `addr` or `hardware_addr` is not unicast. The cache
     ///   is left unchanged.
     pub fn insert(
         &mut self,

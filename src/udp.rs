@@ -1,23 +1,10 @@
 //! UDP sockets.
 //!
-//! [`Stack::add_udp_socket`](crate::Stack::add_udp_socket) creates a socket inside
-//! the stack and returns a [`UdpHandle`] identifying it. All operations go through
-//! [`Stack::udp_socket`](crate::Stack::udp_socket), which borrows the socket as a [`UdpSocket`]:
-//! receiving only touches the socket state, while sending transmits the datagram
-//! immediately.
+//! How to use:
 //!
-//! A single [`bind`](UdpSocket::bind) call pins down (parts of) the socket's
-//! 4-tuple, local and remote halves at once, each part exact or wildcard. Binding
-//! to port 0 allocates an ephemeral port, and binding an identical 4-tuple to
-//! another socket's is rejected.
-//!
-//! Received packets are queued with their IP and UDP headers still in the buffer.
-//! The addresses returned in [`UdpMetadata`] are parsed back out of those header
-//! bytes.
-//!
-//! [`UdpMetadata`] also carries the datagram's [`PacketMeta`] in both directions: on
-//! receive it is what the driver attached to the packet, on send it is attached to the
-//! packet handed to the driver.
+//! - Create a UDP socket with [`Stack::add_udp_socket`](crate::Stack::add_udp_socket)
+//! - [`bind`](UdpSocket::bind) it to a local address and optionally also a remote address.
+//! - Send and receive packets.
 
 use crate::config::{UDP_RX_QUEUE_COUNT, UDP_SOCKET_COUNT};
 use crate::storage::BoundedDeque;
@@ -54,19 +41,18 @@ define_handle! {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct UdpMetadata {
-    /// The remote address: the sender of an incoming datagram, or the destination of
-    /// an outgoing one.
-    pub remote_addr: SocketAddr,
-    /// The local address: the destination of an incoming datagram (always set), or
-    /// the source of an outgoing one. If not set on an outgoing datagram (and the
-    /// socket is not bound to a single address), a suitable source address is
-    /// selected automatically.
-    pub local_addr: Option<IpAddr>,
-    /// The datagram's [packet metadata](PacketMeta): what the driver attached to an
-    /// incoming datagram, or what to attach to an outgoing one (an id to tag it with,
-    /// a transmit timestamp to request).
+    /// The remote address.
     ///
-    /// Zero-sized unless a `packetmeta-*` feature is enabled.
+    /// - For incoming datagrams: the source address
+    /// - For outgoing datagrams: the destination address
+    pub remote_addr: SocketAddr,
+    /// The local address.
+    ///
+    /// - For incoming datagrams: the destination address. Always `Some`.
+    /// - For outgoing datagrams: the source address. If `None`, the stack uses the
+    ///   local address the socket is bound to, else it selects a source address automatically.
+    pub local_addr: Option<IpAddr>,
+    /// The datagram's [packet metadata](PacketMeta).
     pub meta: PacketMeta,
 }
 
@@ -402,15 +388,21 @@ impl UdpSocket<'_, '_> {
         self.sockets.get_mut(self.index)
     }
 
-    /// Return the bound local address. The address is the filter the bind
-    /// scoped the socket to. A zero port means the socket is not bound.
+    /// Return the bound local address.
+    ///
+    /// See [`bind`](Self::bind) for details on how UDP socket binding works.
+    ///
+    /// Returns `ListenSocketAddr::UNSPECIFIED` if not bound.
     #[inline]
     pub fn local_addr(&self) -> ListenSocketAddr {
         self.inner().local
     }
 
-    /// Return the bound remote address. Unspecified parts match any remote:
-    /// a fully unspecified address means an ordinary unconnected socket.
+    /// Return the bound remote address.
+    ///
+    /// See [`bind`](Self::bind) for details on how UDP socket binding works.
+    ///
+    /// Returns `ListenSocketAddr::UNSPECIFIED` if not bound.
     #[inline]
     pub fn remote_addr(&self) -> ListenSocketAddr {
         self.inner().remote
@@ -428,8 +420,8 @@ impl UdpSocket<'_, '_> {
     /// A socket without an explicitly set hop limit value uses the default [IANA
     /// recommended] value (64).
     ///
-    /// Errors:
-    /// - `InvalidHopLimit` if the hop limit is `Some(0)`. A host must not send a
+    /// # Errors
+    /// - `InvalidHopLimit`: if the hop limit is `Some(0)`. A host must not send a
     ///   packet with a hop limit of zero ([RFC 1122 § 3.2.1.7]). The socket is
     ///   left unchanged.
     ///
@@ -458,7 +450,8 @@ impl UdpSocket<'_, '_> {
     /// bound to different interfaces. On ingress, a socket bound to the
     /// arrival interface wins over an unbound one with an equal tuple.
     ///
-    /// Returns `Err(BindError::InvalidState)` if the socket is open.
+    /// # Errors
+    /// - `InvalidState`: if the socket is open.
     #[cfg(feature = "iface-bind")]
     pub fn bind_to_iface(&mut self, iface: Option<IfaceHandle>) -> Result<(), BindError> {
         if self.is_open() {
@@ -476,47 +469,51 @@ impl UdpSocket<'_, '_> {
         self.inner().binding.iface()
     }
 
-    /// Bind the socket, fixing (parts of) its 4-tuple.
+    /// Bind the socket.
     ///
-    /// Every UDP socket is identified by the (local address, local port, remote
-    /// address, remote port) tuple, and binding pins parts of it down: each part
-    /// of `local` and `remote` is either exact or a wildcard (absent or
-    /// unspecified address / zero port):
+    /// This method opens the socket and configures which packets it will
+    /// send and receive. It is equivalent to `bind()` and/or `connect()` in the
+    /// BSD / Linux socket API.
     ///
-    /// - `bind(port, ANY)`: server on all addresses of both IP versions.
-    /// - `bind((Ipv4Addr::UNSPECIFIED, port), ANY)`: server on all IPv4
-    ///   addresses, and no IPv6 one.
-    /// - `bind((addr, port), ANY)`: server on one address.
-    /// - `bind(0, ANY)`: unconnected sender. A free port in the 49152..=65535
-    ///   range is allocated, picked at a random starting point.
-    /// - `bind((addr, 0), ANY)`: pin the source address, allocate the port.
-    /// - `bind(0, remote)`: ordinary connected client. The local address is
-    ///   resolved from the routing tables (a connected socket always has a
-    ///   concrete local address), and an ephemeral local port is allocated.
+    /// # Local address
     ///
-    /// (`ANY` above is [`ListenSocketAddr::UNSPECIFIED`], the fully wildcard
-    /// remote.)
+    /// - `None`: the socket sends/receives packets with any local address. It receives packets destined to unicast, multicast and broadcast addresses.
+    /// - `Some(V4(UNSPECIFIED))`: same as `None`, but IPv4 packets only.
+    /// - `Some(V6(UNSPECIFIED))`: same as `None`, but IPv6 packets only.
+    /// - `Some(_)`: the socket sends/receives packets from/to the given local address only. Multicast and broadcast addresses are allowed, but then the socket can receive only, not send.
     ///
-    /// Specified parts of `remote` filter ingress, so only datagrams matching them
-    /// are delivered, and are the default destination for sends. The remote half is
-    /// not all-or-nothing: e.g. a remote with only the address specified accepts
-    /// any port of that one peer.
+    /// # Local port
     ///
-    /// A bind is rejected only if another UDP socket holds the *identical*
-    /// 4-tuple. Sharing a local port is fine as long as the tuples differ
-    /// (e.g. a connected socket next to a wildcard server socket, two sockets
-    /// connected to different remotes, or the two halves of a dual stack,
-    /// `(Ipv4Addr::UNSPECIFIED, port)` and `(Ipv6Addr::UNSPECIFIED,
-    /// port)`). Distinct overlapping tuples are never ambiguous, since each
-    /// datagram is handed to the most specific match. Ephemeral allocation
-    /// applies the same rule, so connected sockets can reuse ports held by
-    /// sockets with a different remote.
+    /// - `0`: the stack allocates an unused ephemeral port. You can retrieve it with [`local_addr`](Self::local_addr).
+    /// - non-zero: the given port is used.
     ///
-    /// Returns `Err(BindError::InvalidState)` if the socket is already bound (see
-    /// [is_open](#method.is_open)), `Err(BindError::InUse)` on an identical
-    /// bind, `Err(BindError::NoFreePorts)` if the ephemeral range is exhausted,
-    /// and `Err(BindError::Unaddressable)` on an address family mismatch or if
-    /// no local address is available for the given remote.
+    /// The socket only receives packets to that port and sends from that port. A UDP socket *must* be bound to at least a port, there's no way to make a UDP socket listen on all ports.
+    ///
+    /// # Remote address
+    ///
+    /// - `None`: the socket sends/receives packets with any remote address.
+    /// - `Some(V4(UNSPECIFIED))`: same as `None`, but IPv4 packets only.
+    /// - `Some(V6(UNSPECIFIED))`: same as `None`, but IPv6 packets only.
+    /// - `Some(_)`: the socket sends/receives packets to/from the given remote address only. Multicast and broadcast addresses are allowed, but then the socket can send only, not receive.
+    ///
+    /// # Remote port
+    ///
+    /// - `0`: the socket sends/receives packets to/from any remote port.
+    /// - non-zero: the socket sends/receives packets to/from the given port only.
+    ///
+    /// Overlapping bindings between sockets are allowed as long as they're
+    /// not identical. For example you can bind a socket to `*:53` and another to
+    /// `1.2.3.4:53`, but you can't bind two sockets to `*:53`. If a packet
+    /// matches multiple sockets, the one with the most specific binding wins.
+    /// Packets are not duplicated, only the winning socket will receive it.
+    ///
+    /// # Errors
+    /// - `InvalidState`: if the socket is already bound (see
+    ///   [is_open](#method.is_open)).
+    /// - `InUse`: on an identical bind.
+    /// - `NoFreePorts`: if the ephemeral range is exhausted.
+    /// - `Unaddressable`: on an address family mismatch, or if no local address
+    ///   is available for the given remote.
     pub fn bind(
         &mut self,
         local: impl Into<ListenSocketAddr>,
@@ -655,12 +652,12 @@ impl UdpSocket<'_, '_> {
     ///
     /// This is zero-copy: the returned value is the buffer the datagram arrived in.
     ///
-    /// Returns `Err(RecvError::InvalidState)` if the socket is not bound, and
-    /// `Err(RecvError::Exhausted)` if the RX queue is empty.
-    ///
-    /// With the `icmp-errors` feature, a pending ICMP error is reported
-    /// first, as `Err(RecvError::IcmpError { .. })`, once, clearing it, before
-    /// any queued datagrams. See [`take_icmp_error`](Self::take_icmp_error).
+    /// # Errors
+    /// - `InvalidState`: if the socket is not bound.
+    /// - `Exhausted`: if the RX queue is empty.
+    /// - `IcmpError`: with the `icmp-errors` feature, if an ICMP error is
+    ///   pending. It is reported before any queued datagram, once, and taking
+    ///   it clears it. See [`take_icmp_error`](Self::take_icmp_error).
     pub fn recv(&mut self) -> Result<RecvPacket, RecvError> {
         if !self.is_open() {
             return Err(RecvError::InvalidState);
@@ -677,10 +674,15 @@ impl UdpSocket<'_, '_> {
     /// Dequeue a received datagram, copying the payload into the given slice, and
     /// return the number of octets copied along with its metadata.
     ///
-    /// **Note**: when the size of the provided buffer is smaller than the size of the
-    /// payload, the packet is dropped and `Err(RecvError::Truncated)` is returned.
-    ///
     /// See also [recv](#method.recv).
+    ///
+    /// # Errors
+    /// - `InvalidState`: if the socket is not bound.
+    /// - `Exhausted`: if the RX queue is empty.
+    /// - `Truncated`: if `data` is smaller than the payload. The packet is
+    ///   dropped.
+    /// - `IcmpError`: with the `icmp-errors` feature, if an ICMP error is
+    ///   pending. See [recv](#method.recv).
     pub fn recv_slice(&mut self, data: &mut [u8]) -> Result<(usize, UdpMetadata), RecvError> {
         let packet = self.recv()?;
         let payload = packet.payload();
@@ -694,8 +696,9 @@ impl UdpSocket<'_, '_> {
     /// Peek at the next received datagram without dequeueing it, returning its
     /// payload and its metadata.
     ///
-    /// Returns `Err(RecvError::InvalidState)` if the socket is not bound, and
-    /// `Err(RecvError::Exhausted)` if the RX queue is empty.
+    /// # Errors
+    /// - `InvalidState`: if the socket is not bound.
+    /// - `Exhausted`: if the RX queue is empty.
     pub fn peek(&mut self) -> Result<(&[u8], UdpMetadata), RecvError> {
         if !self.is_open() {
             return Err(RecvError::InvalidState);
@@ -713,11 +716,13 @@ impl UdpSocket<'_, '_> {
     /// Peek at the next received datagram without dequeueing it, copying the payload
     /// into the given slice.
     ///
-    /// **Note**: when the size of the provided buffer is smaller than the size of the
-    /// payload, no data is copied and `Err(RecvError::Truncated)` is returned. The
-    /// packet stays in the queue.
-    ///
     /// See also [peek](#method.peek).
+    ///
+    /// # Errors
+    /// - `InvalidState`: if the socket is not bound.
+    /// - `Exhausted`: if the RX queue is empty.
+    /// - `Truncated`: if `data` is smaller than the payload. No data is copied
+    ///   and the packet stays in the queue.
     pub fn peek_slice(&mut self, data: &mut [u8]) -> Result<(usize, UdpMetadata), RecvError> {
         let (payload, meta) = self.peek()?;
         if data.len() < payload.len() {
@@ -772,14 +777,16 @@ impl UdpSocket<'_, '_> {
     /// to tag the packet with, or a request to timestamp its transmission (see
     /// [`Stack::poll_tx_timestamp`]).
     ///
-    /// Returns `Err(SendError::InvalidState)` if the socket is not bound.
-    /// Returns `Err(SendError::Unaddressable)` if the destination address or port
-    /// is still unspecified after defaulting, the destination's address family does
-    /// not match the source address, no source address is available, or the source
-    /// address is not assigned to any interface.
-    /// Returns `Err(SendError::BufferFull)` if the payload cannot fit in a packet
-    /// buffer.
-    /// Returns `Err(SendError::NoBuffer)` if every packet buffer is in use.
+    /// # Errors
+    /// - `InvalidState`: if the socket is not bound.
+    /// - `Unaddressable`: if the destination address or port is still
+    ///   unspecified after defaulting, the destination's address family does not
+    ///   match the source address, no source address is available, or the source
+    ///   address is not assigned to any interface.
+    /// - `BufferFull`: if the payload cannot fit in a packet buffer.
+    /// - `NoBuffer`: if every packet buffer is in use.
+    /// - `DeviceBusy`: if the interface the datagram would go out of has no room
+    ///   for it right now.
     pub fn send_with(
         &mut self,
         max_size: usize,

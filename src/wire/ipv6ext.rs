@@ -38,7 +38,9 @@ impl<'a> ExtHeader<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Malformed)` if the buffer is too short.
+    ///
+    /// # Errors
+    /// - `Malformed`: if the buffer is too short.
     pub fn check_len(&self) -> Result<(), Malformed> {
         if self.buffer.len() < field::DATA_START || self.buffer.len() < self.header_len() {
             Err(Malformed)

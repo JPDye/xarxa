@@ -94,8 +94,8 @@ impl defmt::Format for Repr {
 impl Repr {
     /// Parse a fragment header from the front of `buf`.
     ///
-    /// Errors:
-    /// - `Malformed` if the buffer is shorter than the header, or does not start
+    /// # Errors
+    /// - `Malformed`: if the buffer is shorter than the header, or does not start
     ///   with a fragment header dispatch.
     pub fn parse(buf: &[u8]) -> Result<Self, Malformed> {
         if buf.len() < FIRST_FRAGMENT_HEADER_SIZE {

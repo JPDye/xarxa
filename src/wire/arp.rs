@@ -82,10 +82,12 @@ impl<'a> Packet<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Malformed)` if the buffer is too short.
     ///
     /// The result of this check is invalidated by calling [set_hardware_len] or
     /// [set_protocol_len].
+    ///
+    /// # Errors
+    /// - `Malformed`: if the buffer is too short.
     ///
     /// [set_hardware_len]: #method.set_hardware_len
     /// [set_protocol_len]: #method.set_protocol_len

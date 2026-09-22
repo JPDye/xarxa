@@ -83,8 +83,9 @@ impl<'a> OptionWriter<'a> {
 
     /// Write one option.
     ///
-    /// Errors if the option data is longer than 255 bytes or doesn't fit in the
-    /// remaining space.
+    /// # Errors
+    /// - `Malformed`: if the option data is longer than 255 bytes, or does not
+    ///   fit in the remaining space.
     pub fn emit(&mut self, option: DhcpOption<'_>) -> Result<(), Malformed> {
         if option.data.len() > u8::MAX as _ {
             return Err(Malformed);
@@ -108,7 +109,8 @@ impl<'a> OptionWriter<'a> {
 
     /// Write the end marker. No more options can be written after this.
     ///
-    /// Errors if there is no space left.
+    /// # Errors
+    /// - `Malformed`: if there is no space left.
     pub fn end(&mut self) -> Result<(), Malformed> {
         if self.buffer.is_empty() {
             return Err(Malformed);
@@ -296,7 +298,9 @@ impl<'a> Packet<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Malformed)` if the buffer is too short.
+    ///
+    /// # Errors
+    /// - `Malformed`: if the buffer is too short.
     pub fn check_len(&self) -> Result<(), Malformed> {
         let len = self.buffer.len();
         if len < HEADER_LEN { Err(Malformed) } else { Ok(()) }
@@ -431,7 +435,8 @@ impl<'a> Packet<'a> {
 
     /// Return the message type, from the message type option.
     ///
-    /// Errors if the option is missing or malformed.
+    /// # Errors
+    /// - `Malformed`: if the option is missing or malformed.
     pub fn message_type(&self) -> Result<MessageType, Malformed> {
         match self.option(field::OPT_DHCP_MESSAGE_TYPE) {
             Some(&[value]) => Ok(MessageType::from(value)),
@@ -441,7 +446,8 @@ impl<'a> Packet<'a> {
 
     /// Return the `sname` (server name) field as a string.
     ///
-    /// Errors if it is empty or not valid UTF-8.
+    /// # Errors
+    /// - `Malformed`: if the field is empty or not valid UTF-8.
     pub fn sname(&self) -> Result<&str, Malformed> {
         let data = &self.buffer[field::SNAME];
         let len = data.iter().position(|&x| x == 0).ok_or(Malformed)?;
@@ -455,7 +461,8 @@ impl<'a> Packet<'a> {
 
     /// Return the `file` (boot file name) field as a string.
     ///
-    /// Errors if it is empty or not valid UTF-8.
+    /// # Errors
+    /// - `Malformed`: if the field is empty or not valid UTF-8.
     pub fn boot_file(&self) -> Result<&str, Malformed> {
         let data = &self.buffer[field::FILE];
         let len = data.iter().position(|&x| x == 0).ok_or(Malformed)?;

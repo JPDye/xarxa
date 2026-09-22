@@ -296,14 +296,14 @@ impl TcpListener<'_> {
 
     /// Start listening on the given local address.
     ///
-    /// Returns:
-    /// - `Err(ListenError::Unaddressable)` if the port is zero.
-    /// - `Err(ListenError::InvalidState)` if the listener is already listening
-    ///   (unless it is listening on this same address, which is a no-op).
-    /// - `Err(ListenError::InUse)` if another listener is bound to an identical
-    ///   address. Listeners on the same port with *different* specificity (one
-    ///   wildcard, one per-version, one per-address) may coexist, and so may
-    ///   listeners on identical addresses bound to different interfaces.
+    /// # Errors
+    /// - `Unaddressable`: if the port is zero.
+    /// - `InvalidState`: if the listener is already listening (unless it is
+    ///   listening on this same address, which is a no-op).
+    /// - `InUse`: if another listener is bound to an identical address.
+    ///   Listeners on the same port with *different* specificity (one wildcard,
+    ///   one per-version, one per-address) may coexist, and so may listeners on
+    ///   identical addresses bound to different interfaces.
     pub fn listen(&mut self, local: impl Into<ListenSocketAddr>) -> Result<(), ListenError> {
         let local = local.into();
         if local.port == 0 {
@@ -341,7 +341,8 @@ impl TcpListener<'_> {
     /// or if one is not bound. In the latter case, the bound listener "wins" for incoming
     /// connections coming from the bound interface.
     ///
-    /// Returns `Err(ListenError::InvalidState)` if the listener is open.
+    /// # Errors
+    /// - `InvalidState`: if the listener is open.
     #[cfg(feature = "iface-bind")]
     pub fn bind_to_iface(&mut self, iface: Option<IfaceHandle>) -> Result<(), ListenError> {
         if self.is_open() {

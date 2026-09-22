@@ -164,8 +164,8 @@ impl DnsClient {
     /// Creates and binds a UDP socket in `stack`.
     /// Truncates the server list if `servers.len() > DNS_MAX_SERVER_COUNT`.
     ///
-    /// Errors:
-    /// - `Full` if the stack has no room for another UDP socket.
+    /// # Errors
+    /// - `Full`: if the stack has no room for another UDP socket.
     pub fn new(stack: &mut Stack, servers: &[IpAddr]) -> Result<DnsClient, Full> {
         let truncated_servers = &servers[..min(servers.len(), DNS_MAX_SERVER_COUNT)];
 
@@ -267,6 +267,8 @@ impl DnsClient {
 
     /// Start a query with a raw (wire-format) DNS name, such as
     /// `b"\x09rust-lang\x03org\x00"`.
+    ///
+    /// With the `mdns` feature, names ending in `.local` are sent with multicast DNS.
     ///
     /// You probably want to use [`start_query`](Self::start_query) instead.
     pub fn start_query_raw(

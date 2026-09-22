@@ -162,9 +162,11 @@ impl<'a> Packet<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Malformed)` if the buffer is too short.
     ///
     /// The result of this check is invalidated by calling [set_header_len].
+    ///
+    /// # Errors
+    /// - `Malformed`: if the buffer is too short.
     ///
     /// [set_header_len]: #method.set_header_len
     pub fn check_len(&self) -> Result<(), Malformed> {

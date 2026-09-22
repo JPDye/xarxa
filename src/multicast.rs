@@ -165,8 +165,8 @@ impl Iface<'_, '_> {
     /// The stack accepts packets sent to the group right away, and reports the
     /// membership to the routers on the link from the next [`Stack::poll`](crate::Stack::poll).
     ///
-    /// Errors:
-    /// - `Unaddressable` if the address is not a multicast address.
+    /// # Errors
+    /// - `Unaddressable`: if the address is not a multicast address.
     pub fn join_multicast_group(&mut self, addr: impl Into<IpAddr>) -> Result<(), MulticastError> {
         let res = self.state_mut().join_multicast_group(addr);
         #[cfg(feature = "medium-ethernet")]
@@ -181,8 +181,8 @@ impl Iface<'_, '_> {
     /// [`Stack::poll`](crate::Stack::poll). Leaving a group that was not joined
     /// does nothing.
     ///
-    /// Errors:
-    /// - `Unaddressable` if the address is not a multicast address.
+    /// # Errors
+    /// - `Unaddressable`: if the address is not a multicast address.
     pub fn leave_multicast_group(&mut self, addr: impl Into<IpAddr>) -> Result<(), MulticastError> {
         let res = self.state_mut().leave_multicast_group(addr);
         #[cfg(feature = "medium-ethernet")]

@@ -548,8 +548,8 @@ impl<'d> Stack<'d> {
     ///
     /// An empty string clears the hostname.
     ///
-    /// Errors:
-    /// - `HostnameTooLong` if `hostname` is longer than 63 bytes. The hostname
+    /// # Errors
+    /// - `HostnameTooLong`: if `hostname` is longer than 63 bytes. The hostname
     ///   is left unchanged.
     #[cfg(feature = "hostname")]
     pub fn set_hostname(&mut self, hostname: &str) -> Result<(), crate::error::HostnameTooLong> {
@@ -581,13 +581,13 @@ impl<'d> Stack<'d> {
     /// # }
     /// ```
     ///
-    /// Errors:
-    /// - `Full` if the stack has no room for another interface. Only possible
+    /// # Errors
+    /// - `Full`: if the stack has no room for another interface. Only possible
     ///   without the `alloc` feature, where the limit is
     ///   [`IFACE_COUNT`].
-    /// - `UnsupportedMedium` if the build has no `medium-*` feature for the
+    /// - `UnsupportedMedium`: if the build has no `medium-*` feature for the
     ///   device's medium.
-    /// - `HardwareAddrMismatch` if the hardware address the device reports is
+    /// - `HardwareAddrMismatch`: if the hardware address the device reports is
     ///   not of the kind its medium uses.
     #[cfg(feature = "alloc")]
     pub fn add_iface(&mut self, driver: alloc::boxed::Box<dyn Driver + 'd>) -> Result<IfaceHandle, AddIfaceError> {
@@ -601,13 +601,13 @@ impl<'d> Stack<'d> {
     /// removed, so the device must be declared before the stack, or be `'static`.
     /// Otherwise this is [`add_iface`](Self::add_iface).
     ///
-    /// Errors:
-    /// - `Full` if the stack has no room for another interface. Only possible
+    /// # Errors
+    /// - `Full`: if the stack has no room for another interface. Only possible
     ///   without the `alloc` feature, where the limit is
     ///   [`IFACE_COUNT`].
-    /// - `UnsupportedMedium` if the build has no `medium-*` feature for the
+    /// - `UnsupportedMedium`: if the build has no `medium-*` feature for the
     ///   device's medium.
-    /// - `HardwareAddrMismatch` if the hardware address the device reports is
+    /// - `HardwareAddrMismatch`: if the hardware address the device reports is
     ///   not of the kind its medium uses.
     pub fn add_iface_borrowed(&mut self, driver: &'d mut dyn Driver) -> Result<IfaceHandle, AddIfaceError> {
         self.add_iface_inner(driver.into())
@@ -749,8 +749,8 @@ impl<'d> Stack<'d> {
 
     /// Add a UDP socket to the stack, returning a handle to it.
     ///
-    /// Errors:
-    /// - `Full` if the stack has no room for another UDP socket. Only possible
+    /// # Errors
+    /// - `Full`: if the stack has no room for another UDP socket. Only possible
     ///   without the `alloc` feature, where the limit is
     ///   [`UDP_SOCKET_COUNT`].
     #[cfg(feature = "udp")]
@@ -786,8 +786,8 @@ impl<'d> Stack<'d> {
 
     /// Add a raw socket to the stack, returning a handle to it.
     ///
-    /// Errors:
-    /// - `Full` if the stack has no room for another raw socket. Only possible
+    /// # Errors
+    /// - `Full`: if the stack has no room for another raw socket. Only possible
     ///   without the `alloc` feature, where the limit is
     ///   [`RAW_SOCKET_COUNT`].
     #[cfg(feature = "_raw")]
@@ -829,8 +829,8 @@ impl<'d> Stack<'d> {
     /// # Panics
     /// Panics if the receive buffer is larger than 1 GiB.
     ///
-    /// Errors:
-    /// - `Full` if the stack has no room for another TCP socket. Only possible
+    /// # Errors
+    /// - `Full`: if the stack has no room for another TCP socket. Only possible
     ///   without the `alloc` feature, where the limit is
     ///   [`TCP_SOCKET_COUNT`].
     #[cfg(all(feature = "tcp", feature = "alloc"))]
@@ -858,8 +858,8 @@ impl<'d> Stack<'d> {
     /// # Panics
     /// Panics if the receive buffer is larger than 1 GiB.
     ///
-    /// Errors:
-    /// - `Full` if the stack has no room for another TCP socket. Only possible
+    /// # Errors
+    /// - `Full`: if the stack has no room for another TCP socket. Only possible
     ///   without the `alloc` feature, where the limit is
     ///   [`TCP_SOCKET_COUNT`].
     #[cfg(feature = "tcp")]
@@ -915,8 +915,8 @@ impl<'d> Stack<'d> {
 
     /// Add a TCP listener to the stack, returning a handle to it.
     ///
-    /// Errors:
-    /// - `Full` if the stack has no room for another listener. Only possible
+    /// # Errors
+    /// - `Full`: if the stack has no room for another listener. Only possible
     ///   without the `alloc` feature, where the limit is
     ///   [`TCP_LISTENER_COUNT`].
     #[cfg(feature = "tcp-listener")]

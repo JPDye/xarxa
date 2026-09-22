@@ -107,8 +107,9 @@ impl<'a> Packet<'a> {
     }
 
     /// Ensure that no accessor method will panic if called.
-    /// Returns `Err(Malformed)` if the buffer is smaller than
-    /// the header length.
+    ///
+    /// # Errors
+    /// - `Malformed`: if the buffer is smaller than the header length.
     pub fn check_len(&self) -> Result<(), Malformed> {
         let len = self.buffer.len();
         if len < field::HEADER_END {
@@ -325,7 +326,10 @@ pub struct Question<'a> {
 impl<'a> Question<'a> {
     /// Parse a question from the start of `buffer`.
     ///
-    /// Returns the rest of the buffer and the question. Fails if the class is not IN.
+    /// Returns the rest of the buffer and the question.
+    ///
+    /// # Errors
+    /// - `Malformed`: if the buffer is too short, or the class is not IN.
     pub fn parse(buffer: &'a [u8]) -> Result<(&'a [u8], Question<'a>), Malformed> {
         let (rest, _) = parse_name_part(buffer, |_| ())?;
         let name = &buffer[..buffer.len() - rest.len()];
@@ -409,7 +413,10 @@ pub enum RecordData<'a> {
 impl<'a> Record<'a> {
     /// Parse a record from the start of `buffer`.
     ///
-    /// Returns the rest of the buffer and the record. Fails if the class is not IN.
+    /// Returns the rest of the buffer and the record.
+    ///
+    /// # Errors
+    /// - `Malformed`: if the buffer is too short, or the class is not IN.
     pub fn parse(buffer: &'a [u8]) -> Result<(&'a [u8], Record<'a>), Malformed> {
         let (rest, _) = parse_name_part(buffer, |_| ())?;
         let name = &buffer[..buffer.len() - rest.len()];

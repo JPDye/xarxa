@@ -164,8 +164,8 @@ impl Repr {
     /// `addr_context` the address contexts, indexed by context identifier.
     /// Elided address bits are restored from them.
     ///
-    /// Errors:
-    /// - `Malformed` if the buffer is too short, is not an IPHC header, an
+    /// # Errors
+    /// - `Malformed`: if the buffer is too short, is not an IPHC header, an
     ///   encoding is reserved or unsupported, or an address refers to a
     ///   context or link-layer address that is not there.
     pub fn parse(

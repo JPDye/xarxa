@@ -456,8 +456,8 @@ impl RawHardwareAddress {
 
     /// Parse the address as an address of the given medium.
     ///
-    /// Errors:
-    /// - `Malformed` if the length is wrong for the medium: 6 bytes for Ethernet,
+    /// # Errors
+    /// - `Malformed`: if the length is wrong for the medium: 6 bytes for Ethernet,
     ///   8 (an extended address) for IEEE 802.15.4, or if the medium has no
     ///   addresses.
     pub fn parse(&self, medium: Medium) -> Result<HardwareAddress, Malformed> {

@@ -111,9 +111,8 @@ impl<K> PacketAssembler<K> {
     /// Add a fragment into the packet that is being reassembled.
     ///
     /// # Errors
-    ///
-    /// - Returns [`AssemblerError`] when trying to add data into the buffer at a non-existing
-    ///   place, when the fragments leave more holes than can be tracked, or when no packet
+    /// - `AssemblerError`: if the data goes at a place that does not exist, if
+    ///   the fragments leave more holes than can be tracked, or if no packet
     ///   buffer is free.
     pub(crate) fn add(&mut self, data: &[u8], offset: usize) -> Result<(), AssemblerError> {
         let len = data.len();
@@ -180,7 +179,8 @@ impl<K: Eq + Copy> PacketAssemblerSet<K> {
     ///
     /// If it doesn't exist, it is created, with the `expires_at` timestamp.
     ///
-    /// If the assembler set is full, in which case an error is returned.
+    /// # Errors
+    /// - `AssemblerFullError`: if the assembler set is full.
     pub(crate) fn get(&mut self, key: &K, expires_at: Instant) -> Result<&mut PacketAssembler<K>, AssemblerFullError> {
         let mut empty_slot = None;
         for slot in &mut self.assemblers {

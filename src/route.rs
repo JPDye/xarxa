@@ -117,8 +117,8 @@ impl Routes {
 
     /// Add a route.
     ///
-    /// Errors:
-    /// - `Full` if the table has no room. Only possible without the `alloc`
+    /// # Errors
+    /// - `Full`: if the table has no room. Only possible without the `alloc`
     ///   feature, where the limit is [`ROUTE_COUNT`].
     pub fn add(&mut self, route: Route) -> Result<(), Full> {
         self.storage.push(route).map_err(|_| Full)
@@ -166,8 +166,8 @@ impl Routes {
     ///
     /// Returns the previous default route, if any.
     ///
-    /// Errors:
-    /// - `Full` if the table has no room. Only possible without the `alloc`
+    /// # Errors
+    /// - `Full`: if the table has no room. Only possible without the `alloc`
     ///   feature, where the limit is [`ROUTE_COUNT`].
     #[cfg(feature = "ipv4")]
     pub fn add_default_ipv4_route(&mut self, gateway: Ipv4Addr, iface: IfaceHandle) -> Result<Option<Route>, Full> {
@@ -181,8 +181,8 @@ impl Routes {
     ///
     /// Returns the previous default route, if any.
     ///
-    /// Errors:
-    /// - `Full` if the table has no room. Only possible without the `alloc`
+    /// # Errors
+    /// - `Full`: if the table has no room. Only possible without the `alloc`
     ///   feature, where the limit is [`ROUTE_COUNT`].
     #[cfg(feature = "ipv6")]
     pub fn add_default_ipv6_route(&mut self, gateway: Ipv6Addr, iface: IfaceHandle) -> Result<Option<Route>, Full> {

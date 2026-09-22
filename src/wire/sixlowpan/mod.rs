@@ -38,8 +38,8 @@ const DISPATCH_EXT_HEADER: u8 = 0b1110;
 impl SixlowpanPacket {
     /// Read the dispatch byte of a 6LoWPAN payload.
     ///
-    /// Errors:
-    /// - `Malformed` if the payload is empty, or the dispatch is neither a
+    /// # Errors
+    /// - `Malformed`: if the payload is empty, or the dispatch is neither a
     ///   fragment header nor an IPHC header.
     pub fn dispatch(buffer: &[u8]) -> Result<Self, Malformed> {
         let raw = buffer;

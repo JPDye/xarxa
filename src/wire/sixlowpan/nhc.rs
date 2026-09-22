@@ -18,8 +18,8 @@ pub enum NhcPacket {
 impl NhcPacket {
     /// Read the dispatch byte of a compressed next header.
     ///
-    /// Errors:
-    /// - `Malformed` if the buffer is empty, or the dispatch is neither an
+    /// # Errors
+    /// - `Malformed`: if the buffer is empty, or the dispatch is neither an
     ///   extension header nor a UDP header.
     pub fn dispatch(buffer: &[u8]) -> Result<Self, Malformed> {
         let raw = buffer;
@@ -92,8 +92,8 @@ impl ExtHeaderRepr {
     ///
     /// Returns the header and its length, not counting the payload.
     ///
-    /// Errors:
-    /// - `Malformed` if the buffer is shorter than the header, or does not start
+    /// # Errors
+    /// - `Malformed`: if the buffer is shorter than the header, or does not start
     ///   with an extension header dispatch.
     pub fn parse(buf: &[u8]) -> Result<(Self, usize), Malformed> {
         if buf.is_empty() {
@@ -192,8 +192,8 @@ impl UdpNhcRepr {
     ///
     /// Returns the header and its length, not counting the payload.
     ///
-    /// Errors:
-    /// - `Malformed` if the buffer is shorter than the header, or does not start
+    /// # Errors
+    /// - `Malformed`: if the buffer is shorter than the header, or does not start
     ///   with a UDP header dispatch.
     pub fn parse(buf: &[u8]) -> Result<(Self, usize), Malformed> {
         if buf.is_empty() {
