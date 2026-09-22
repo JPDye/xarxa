@@ -1,8 +1,7 @@
 use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
-use core::str::FromStr;
 
-use crate::error::{Malformed, ParseError};
+use crate::error::Malformed;
 use crate::wire::ip::checksum;
 
 pub use super::IpProtocol as Protocol;
@@ -197,19 +196,6 @@ impl Cidr {
 impl fmt::Display for Cidr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}/{}", self.address, self.prefix_len)
-    }
-}
-
-impl FromStr for Cidr {
-    type Err = ParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let Some(idx) = s.find('/') else {
-            return Err(ParseError);
-        };
-        let addr = s[..idx].parse().map_err(|_| ParseError)?;
-        let prefix_len = s[idx + 1..].parse().map_err(|_| ParseError)?;
-        Cidr::try_new(addr, prefix_len).ok_or(ParseError)
     }
 }
 

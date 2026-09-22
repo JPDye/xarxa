@@ -1,7 +1,7 @@
+use core::convert::From;
 use core::fmt;
-use core::{convert::From, net::AddrParseError, str::FromStr};
 
-use crate::error::{Malformed, ParseError};
+use crate::error::Malformed;
 #[cfg(feature = "ipv4")]
 use crate::wire::{Ipv4Addr, Ipv4AddrExt, Ipv4Cidr};
 #[cfg(feature = "ipv6")]
@@ -228,25 +228,6 @@ impl fmt::Display for Address {
     }
 }
 
-impl FromStr for Address {
-    type Err = AddrParseError;
-
-    #[cfg(all(feature = "ipv4", feature = "ipv6"))]
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.parse().map(Self::V6).or_else(|_| s.parse().map(Self::V4))
-    }
-
-    #[cfg(all(feature = "ipv4", not(feature = "ipv6")))]
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.parse().map(Self::V4)
-    }
-
-    #[cfg(all(not(feature = "ipv4"), feature = "ipv6"))]
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.parse().map(Self::V6)
-    }
-}
-
 /// A specification of a CIDR block, containing an address and a variable-length
 /// subnet masking prefix length.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -370,19 +351,6 @@ impl fmt::Display for Cidr {
     }
 }
 
-impl FromStr for Cidr {
-    type Err = ParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let Some(idx) = s.find('/') else {
-            return Err(ParseError);
-        };
-        let addr = s[..idx].parse().map_err(|_| ParseError)?;
-        let prefix_len = s[idx + 1..].parse().map_err(|_| ParseError)?;
-        Self::try_new(addr, prefix_len).ok_or(ParseError)
-    }
-}
-
 /// An IP address and a port.
 ///
 /// `SocketAddr` names one peer: both the address and the port are meant to be
@@ -461,38 +429,6 @@ impl fmt::Display for SocketAddr {
             #[cfg(feature = "ipv6")]
             Address::V6(addr) => write!(f, "[{}]:{}", addr, self.port),
         }
-    }
-}
-
-impl FromStr for SocketAddr {
-    type Err = ParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        #[cfg(feature = "ipv6")]
-        if s.starts_with('[') {
-            let Some(idx) = s.find(']') else {
-                return Err(ParseError);
-            };
-            let addr = Address::V6(s[1..idx].parse().map_err(|_| ParseError)?);
-            if s.get(idx + 1..).is_none_or(|substr| !substr.starts_with(":")) {
-                return Err(ParseError);
-            }
-            let port = s[idx + 2..].parse().map_err(|_| ParseError)?;
-            return Ok(Self { addr, port });
-        }
-
-        #[cfg(feature = "ipv4")]
-        {
-            let Some(idx) = s.find(':') else {
-                return Err(ParseError);
-            };
-            let addr = Address::V4(s[..idx].parse().map_err(|_| ParseError)?);
-            let port = s[idx + 1..].parse().map_err(|_| ParseError)?;
-            Ok(Self { addr, port })
-        }
-
-        #[cfg(not(feature = "ipv4"))]
-        Err(ParseError)
     }
 }
 
@@ -760,20 +696,6 @@ pub(crate) mod test {
 
     #[cfg(feature = "ipv4")]
     #[test]
-    fn test_parse_ipv4_cidr() {
-        let cidr = Cidr::new(Ipv4Addr::LOCALHOST.into(), 8);
-        assert_eq!(cidr, "127.0.0.1/8".parse().unwrap());
-    }
-
-    #[cfg(feature = "ipv6")]
-    #[test]
-    fn test_parse_ipv6_cidr() {
-        let cidr = Cidr::new(Ipv6Addr::LOCALHOST.into(), 128);
-        assert_eq!(cidr, "::1/128".parse().unwrap());
-    }
-
-    #[cfg(feature = "ipv4")]
-    #[test]
     fn test_print_ipv4_endpoint() {
         let endpoint = SocketAddr {
             addr: Ipv4Addr::LOCALHOST.into(),
@@ -790,25 +712,5 @@ pub(crate) mod test {
             port: 8080,
         };
         assert_eq!("[::1]:8080", format!("{endpoint}"));
-    }
-
-    #[cfg(feature = "ipv4")]
-    #[test]
-    fn test_parse_ipv4_endpoint() {
-        let endpoint = SocketAddr {
-            addr: Ipv4Addr::LOCALHOST.into(),
-            port: 8080,
-        };
-        assert_eq!(endpoint, "127.0.0.1:8080".parse().unwrap());
-    }
-
-    #[cfg(feature = "ipv6")]
-    #[test]
-    fn test_parse_ipv6_endpoint() {
-        let endpoint = SocketAddr {
-            addr: Ipv6Addr::LOCALHOST.into(),
-            port: 8080,
-        };
-        assert_eq!(endpoint, "[::1]:8080".parse().unwrap());
     }
 }
