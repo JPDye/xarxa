@@ -201,7 +201,7 @@ impl<K: Eq + Copy> PacketAssemblerSet<K> {
     /// Remove all [`PacketAssembler`]s that are expired.
     pub fn remove_expired(&mut self, timestamp: Instant) {
         for frag in &mut self.assemblers {
-            if !frag.is_free() && frag.expires_at < timestamp {
+            if !frag.is_free() && frag.expires_at <= timestamp {
                 frag.reset();
             }
         }
@@ -440,10 +440,12 @@ mod tests {
         set.get(&key, Instant::from_secs(10)).unwrap();
         assert_eq!(set.poll_at(), Instant::from_secs(10));
 
-        set.remove_expired(Instant::from_secs(10));
+        set.remove_expired(Instant::from_secs(9));
         assert_eq!(set.poll_at(), Instant::from_secs(10));
 
-        set.remove_expired(Instant::from_secs(11));
+        // Polling at the deadline `poll_at` returned must remove it, or the
+        // stack keeps asking to be polled right away.
+        set.remove_expired(Instant::from_secs(10));
         assert_eq!(set.poll_at(), Instant::MAX);
     }
 
