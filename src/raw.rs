@@ -482,8 +482,9 @@ impl RawSocket<'_, '_> {
     ///
     /// # Errors
     /// - `InvalidState`: if the socket is not bound.
-    /// - `Unaddressable`: if there is no route to the packet's destination (IP
-    ///   mode) or no Ethernet interface to send on (Ethernet mode).
+    /// - `Unaddressable`: if there is no route to the
+    ///   packet's destination or the destination is the unspecified address (IP
+    ///   mode), or no Ethernet interface to send on (Ethernet mode).
     /// - `Malformed`: if the packet fails basic validation (too short for an
     ///   Ethernet header in Ethernet mode, malformed IP header in IP mode), or
     ///   does not match the socket's bind filters.
@@ -581,6 +582,11 @@ impl RawSocket<'_, '_> {
                 };
                 if version.is_some_and(|v| v != dst_addr.version()) || protocol.is_some_and(|p| p != next_header) {
                     return Err(SendError::Malformed);
+                }
+                // The unspecified address is never a destination (RFC 1122
+                // §3.2.1.3, RFC 4291 §2.5.2).
+                if dst_addr.is_unspecified() {
+                    return Err(SendError::Unaddressable);
                 }
                 let route = self
                     .tx
@@ -745,8 +751,8 @@ mod test {
     use crate::stack::Stack;
     use crate::test_device::{Sent, TestDevice};
     use crate::wire::{
-        ETHERNET_HEADER_LEN, EthernetAddress, HardwareAddress, IPV4_HEADER_LEN, IPV6_HEADER_LEN, IpCidr, Ipv4Addr,
-        Ipv6Addr,
+        ETHERNET_HEADER_LEN, EthernetAddress, HardwareAddress, IPV4_HEADER_LEN, IPV6_HEADER_LEN, Icmpv4Message,
+        Icmpv4Packet, Icmpv6Message, Icmpv6Packet, IpCidr, Ipv4Addr, Ipv6Addr,
     };
 
     fn add_test_iface(stack: &mut Stack, medium: Medium, ip_addrs: Vec<IpCidr>) -> (IfaceHandle, Sent) {
@@ -1367,5 +1373,255 @@ mod test {
             Ok(())
         );
         assert_eq!(tx.borrow().len(), 1);
+    }
+
+    const LOCAL_V4: IpCidr = IpCidr::new(IpAddr::v4(192, 168, 69, 1), 24);
+    const LOCAL_V6: IpCidr = IpCidr::new(IpAddr::v6(0xfdaa, 0, 0, 0, 0, 0, 0, 1), 64);
+
+    #[test]
+    fn test_send_ipv6() {
+        let mut stack = Stack::new(0x1234_5678_dead_beef);
+        let handle = stack.add_raw_socket().unwrap();
+        stack
+            .raw_socket(handle)
+            .bind(RawMode::Ip {
+                version: Some(IpVersion::V6),
+                protocol: Some(IP_PROTO),
+            })
+            .unwrap();
+
+        // No interface owns an fdaa:: address: no route to the destination.
+        let packet = ipv6_packet(IP_PROTO, b"abcd");
+        assert_eq!(
+            stack.raw_socket(handle).send_slice(&packet),
+            Err(SendError::Unaddressable)
+        );
+
+        // With the destination on-link, the packet goes out byte for byte.
+        let (_iface, tx) = add_test_iface(&mut stack, Medium::Ip, vec![LOCAL_V6]);
+        // Adding an IPv6 address may make the stack transmit on its own.
+        tx.borrow_mut().clear();
+        assert_eq!(stack.raw_socket(handle).send_slice(&packet), Ok(()));
+        assert_eq!(*tx.borrow(), vec![packet.clone()]);
+
+        // Version filter mismatch: an IPv4 packet on an IPv6-bound socket.
+        assert_eq!(
+            stack.raw_socket(handle).send_slice(&ipv4_packet(IP_PROTO, b"abcd")),
+            Err(SendError::Malformed)
+        );
+        // Protocol filter mismatch.
+        assert_eq!(
+            stack
+                .raw_socket(handle)
+                .send_slice(&ipv6_packet(IpProtocol::Tcp, b"abcd")),
+            Err(SendError::Malformed)
+        );
+        // Too big for a packet buffer: IP mode leaves room for the link header,
+        // whatever medium the packet ends up going out of.
+        let max = crate::driver::config::PACKET_BUF_SIZE - LINK_HEADER_LEN;
+        assert_eq!(
+            stack.raw_socket(handle).send_with(max + 1, |_| unreachable!()),
+            Err(SendError::BufferFull)
+        );
+        assert_eq!(tx.borrow().len(), 1);
+    }
+
+    /// An ICMPv4 echo request: ident 0x1234, sequence 0x5678, 16 bytes of 0xff.
+    fn icmpv4_echo_request() -> Vec<u8> {
+        let mut bytes = vec![0xff; 24];
+        let mut icmp = Icmpv4Packet::new_unchecked(&mut bytes[..]);
+        icmp.set_msg_type(Icmpv4Message::EchoRequest);
+        icmp.set_msg_code(0);
+        icmp.set_echo_ident(0x1234);
+        icmp.set_echo_seq_no(0x5678);
+        icmp.fill_checksum();
+        bytes
+    }
+
+    /// An ICMPv6 echo request, like [`icmpv4_echo_request`], with the checksum
+    /// computed over the given addresses.
+    fn icmpv6_echo_request(src_addr: &Ipv6Addr, dst_addr: &Ipv6Addr) -> Vec<u8> {
+        let mut bytes = vec![0xff; 24];
+        let mut icmp = Icmpv6Packet::new_unchecked(&mut bytes[..]);
+        icmp.set_msg_type(Icmpv6Message::EchoRequest);
+        icmp.set_msg_code(0);
+        icmp.set_echo_ident(0x1234);
+        icmp.set_echo_seq_no(0x5678);
+        icmp.fill_checksum(src_addr, dst_addr);
+        bytes
+    }
+
+    #[test]
+    fn test_send_icmpv4_echo() {
+        // Ping goes through a raw socket: the whole packet, ICMP header and
+        // checksum included, is the user's and goes out untouched.
+        let mut stack = Stack::new(0x1234_5678_dead_beef);
+        let (_iface, tx) = add_test_iface(&mut stack, Medium::Ip, vec![LOCAL_V4]);
+        let handle = stack.add_raw_socket().unwrap();
+        stack
+            .raw_socket(handle)
+            .bind(RawMode::Ip {
+                version: Some(IpVersion::V4),
+                protocol: Some(IpProtocol::Icmp),
+            })
+            .unwrap();
+
+        let packet = ipv4_packet(IpProtocol::Icmp, &icmpv4_echo_request());
+        {
+            let mut copy = packet.clone();
+            let mut ip = Ipv4Packet::new_checked(&mut copy[..]).unwrap();
+            let icmp = Icmpv4Packet::new_checked(ip.payload_mut()).unwrap();
+            assert!(icmp.verify_checksum());
+        }
+        assert_eq!(stack.raw_socket(handle).send_slice(&packet), Ok(()));
+        assert_eq!(*tx.borrow(), vec![packet.clone()]);
+
+        // An unspecified destination is no destination.
+        let mut unaddressable = packet.clone();
+        Ipv4Packet::new_unchecked(&mut unaddressable[..]).set_dst_addr(Ipv4Addr::UNSPECIFIED);
+        assert_eq!(
+            stack.raw_socket(handle).send_slice(&unaddressable),
+            Err(SendError::Unaddressable)
+        );
+        assert_eq!(tx.borrow().len(), 1);
+    }
+
+    #[test]
+    fn test_send_icmpv6_echo() {
+        let mut stack = Stack::new(0x1234_5678_dead_beef);
+        let (_iface, tx) = add_test_iface(&mut stack, Medium::Ip, vec![LOCAL_V6]);
+        // Adding an IPv6 address may make the stack transmit on its own.
+        tx.borrow_mut().clear();
+        let handle = stack.add_raw_socket().unwrap();
+        stack
+            .raw_socket(handle)
+            .bind(RawMode::Ip {
+                version: Some(IpVersion::V6),
+                protocol: Some(IpProtocol::Icmpv6),
+            })
+            .unwrap();
+
+        let src_addr = Ipv6Addr::new(0xfdaa, 0, 0, 0, 0, 0, 0, 1);
+        let dst_addr = Ipv6Addr::new(0xfdaa, 0, 0, 0, 0, 0, 0, 2);
+        let packet = ipv6_packet(IpProtocol::Icmpv6, &icmpv6_echo_request(&src_addr, &dst_addr));
+        {
+            let mut copy = packet.clone();
+            let mut ip = Ipv6Packet::new_checked(&mut copy[..]).unwrap();
+            let icmp = Icmpv6Packet::new_checked(ip.payload_mut()).unwrap();
+            assert!(icmp.verify_checksum(&src_addr, &dst_addr));
+        }
+        assert_eq!(stack.raw_socket(handle).send_slice(&packet), Ok(()));
+        assert_eq!(*tx.borrow(), vec![packet.clone()]);
+
+        // An unspecified destination is no destination.
+        let mut unaddressable = packet.clone();
+        Ipv6Packet::new_unchecked(&mut unaddressable[..]).set_dst_addr(Ipv6Addr::UNSPECIFIED);
+        assert_eq!(
+            stack.raw_socket(handle).send_slice(&unaddressable),
+            Err(SendError::Unaddressable)
+        );
+        assert_eq!(tx.borrow().len(), 1);
+    }
+
+    #[test]
+    fn test_unfiltered_sends_all() {
+        // One unfiltered socket sends packets of either IP version and any
+        // protocol.
+        let mut stack = Stack::new(0x1234_5678_dead_beef);
+        let (_iface, tx) = add_test_iface(&mut stack, Medium::Ip, vec![LOCAL_V4, LOCAL_V6]);
+        // Adding an IPv6 address may make the stack transmit on its own.
+        tx.borrow_mut().clear();
+        let handle = stack.add_raw_socket().unwrap();
+        stack
+            .raw_socket(handle)
+            .bind(RawMode::Ip {
+                version: None,
+                protocol: None,
+            })
+            .unwrap();
+
+        let packets = [
+            ipv4_packet(IpProtocol::Udp, b"v4 udp"),
+            ipv4_packet(IpProtocol::Tcp, b"v4 tcp"),
+            ipv6_packet(IpProtocol::Udp, b"v6 udp"),
+            ipv6_packet(IpProtocol::Tcp, b"v6 tcp"),
+        ];
+        for packet in &packets {
+            assert_eq!(stack.raw_socket(handle).send_slice(packet), Ok(()));
+        }
+        assert_eq!(*tx.borrow(), packets.to_vec());
+    }
+
+    #[test]
+    fn test_unfiltered_accepts_all() {
+        // Every one of these is a stack protocol, so ingress offers each socket a
+        // copy and hands the original back for the stack's own processing.
+        let mut stack = Stack::new(0x1234_5678_dead_beef);
+        let iface = IfaceHandle::new(0);
+        let packets = [
+            (IpProtocol::Icmp, ipv4_packet(IpProtocol::Icmp, b"v4 icmp")),
+            (IpProtocol::Tcp, ipv4_packet(IpProtocol::Tcp, b"v4 tcp")),
+            (IpProtocol::Udp, ipv4_packet(IpProtocol::Udp, b"v4 udp")),
+            (IpProtocol::Icmpv6, ipv6_packet(IpProtocol::Icmpv6, b"v6 icmp")),
+            (IpProtocol::Tcp, ipv6_packet(IpProtocol::Tcp, b"v6 tcp")),
+            (IpProtocol::Udp, ipv6_packet(IpProtocol::Udp, b"v6 udp")),
+        ];
+
+        // An unfiltered socket receives all of them.
+        let handle = stack.add_raw_socket().unwrap();
+        stack
+            .raw_socket(handle)
+            .bind(RawMode::Ip {
+                version: None,
+                protocol: None,
+            })
+            .unwrap();
+        for (protocol, packet) in &packets {
+            let version = IpVersion::of_packet(packet).unwrap();
+            let res = stack.process_raw_ip(iface, version, *protocol, true, buf_from(packet));
+            let (res_buf, handled) = res.unwrap();
+            assert_eq!(&*res_buf, &packet[..]);
+            assert!(handled);
+            assert_eq!(&*stack.raw_socket(handle).recv().unwrap(), &packet[..]);
+        }
+
+        // A socket filtered on (IPv6, ICMPv6) receives only that one.
+        stack.raw_socket(handle).close();
+        stack
+            .raw_socket(handle)
+            .bind(RawMode::Ip {
+                version: Some(IpVersion::V6),
+                protocol: Some(IpProtocol::Icmpv6),
+            })
+            .unwrap();
+        for (protocol, packet) in &packets {
+            let version = IpVersion::of_packet(packet).unwrap();
+            let res = stack.process_raw_ip(iface, version, *protocol, true, buf_from(packet));
+            let (res_buf, handled) = res.unwrap();
+            assert_eq!(&*res_buf, &packet[..]);
+            let wanted = version == IpVersion::V6 && *protocol == IpProtocol::Icmpv6;
+            assert_eq!(handled, wanted);
+            assert_eq!(stack.raw_socket(handle).can_recv(), wanted);
+            if wanted {
+                assert_eq!(&*stack.raw_socket(handle).recv().unwrap(), &packet[..]);
+            }
+        }
+
+        // A protocol filter does not override the version filter: an IPv4 packet
+        // of the right protocol is not for an IPv6-bound socket.
+        stack.raw_socket(handle).close();
+        stack
+            .raw_socket(handle)
+            .bind(RawMode::Ip {
+                version: Some(IpVersion::V6),
+                protocol: Some(IP_PROTO),
+            })
+            .unwrap();
+        let packet = ipv4_packet(IP_PROTO, b"v4 only");
+        let res = stack.process_raw_ip(iface, IpVersion::V4, IP_PROTO, false, buf_from(&packet));
+        let (res_buf, handled) = res.unwrap();
+        assert_eq!(&*res_buf, &packet[..]);
+        assert!(!handled);
+        assert!(!stack.raw_socket(handle).can_recv());
     }
 }
