@@ -93,9 +93,13 @@ pub(crate) struct PrefixInformation {
 impl PrefixInformation {
     /// Validates the prefix information option against check a, b, c in
     /// <https://www.rfc-editor.org/rfc/rfc4862#section-5.5.3>
+    ///
+    /// Also rejects multicast prefixes, which would form a multicast address.
+    /// The RFC leaves that to the address architecture; Linux ignores them too.
     fn is_valid_prefix_info(&self) -> bool {
         self.flags.contains(NdiscPrefixInfoFlags::ADDRCONF)
             && !self.prefix.is_link_local()
+            && !self.prefix.is_multicast()
             && self.preferred_lifetime <= self.valid_lifetime
     }
 }
@@ -777,6 +781,17 @@ mod test {
 
         // No state remaining, nothing to wait on
         assert_eq!(slaac.poll_at(now), Instant::MAX);
+    }
+
+    /// A multicast prefix would form a multicast address. It is ignored.
+    #[test]
+    fn test_ra_multicast_prefix() {
+        let mut slaac = Slaac::new(SlaacConfig::default());
+        let now = Instant::from_millis(1);
+        let mut prefix = PREFIX;
+        prefix.prefix = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0);
+        advertise(&mut slaac, VALID, Some(prefix), now);
+        assert_eq!(slaac.prefix.len(), 0);
     }
 
     #[test]
