@@ -103,6 +103,35 @@ impl Route {
     }
 }
 
+/// Error returned by [`Routes::add`], [`Routes::add_default_ipv4_route`] and
+/// [`Routes::add_default_ipv6_route`].
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteError {
+    /// The router address is not unicast.
+    NotUnicast,
+    /// The table has no room for another route. Only possible without the
+    /// `alloc` feature, where the limit is [`ROUTE_COUNT`].
+    Full,
+}
+
+impl From<Full> for RouteError {
+    fn from(_: Full) -> Self {
+        RouteError::Full
+    }
+}
+
+impl core::fmt::Display for RouteError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            RouteError::NotUnicast => f.write_str("router not unicast"),
+            RouteError::Full => f.write_str("full"),
+        }
+    }
+}
+
+impl core::error::Error for RouteError {}
+
 /// A routing table.
 #[derive(Debug, Default)]
 pub struct Routes {
@@ -118,10 +147,14 @@ impl Routes {
     /// Add a route.
     ///
     /// # Errors
+    /// - `NotUnicast`: if `via_router` is not a unicast address.
     /// - `Full`: if the table has no room. Only possible without the `alloc`
     ///   feature, where the limit is [`ROUTE_COUNT`].
-    pub fn add(&mut self, route: Route) -> Result<(), Full> {
-        self.storage.push(route).map_err(|_| Full)
+    pub fn add(&mut self, route: Route) -> Result<(), RouteError> {
+        if !route.via_router.is_unicast() {
+            return Err(RouteError::NotUnicast);
+        }
+        self.storage.push(route).map_err(|_| RouteError::Full)
     }
 
     /// Remove the route at `index` and return it.
@@ -164,13 +197,22 @@ impl Routes {
 
     /// Add a default ipv4 gateway (ie. "ip route add 0.0.0.0/0 via `gateway` dev `iface`").
     ///
-    /// Returns the previous default route, if any.
+    /// Returns the previous default route, if any. On error the previous
+    /// default route is kept.
     ///
     /// # Errors
+    /// - `NotUnicast`: if `gateway` is not a unicast address.
     /// - `Full`: if the table has no room. Only possible without the `alloc`
     ///   feature, where the limit is [`ROUTE_COUNT`].
     #[cfg(feature = "ipv4")]
-    pub fn add_default_ipv4_route(&mut self, gateway: Ipv4Addr, iface: IfaceHandle) -> Result<Option<Route>, Full> {
+    pub fn add_default_ipv4_route(
+        &mut self,
+        gateway: Ipv4Addr,
+        iface: IfaceHandle,
+    ) -> Result<Option<Route>, RouteError> {
+        if !IpAddr::from(gateway).is_unicast() {
+            return Err(RouteError::NotUnicast);
+        }
         let old = self.remove_default_ipv4_route();
         // If the table is full here, `old` was `None` and nothing was lost.
         self.add(Route::new_ipv4_gateway(gateway, iface))?;
@@ -179,13 +221,22 @@ impl Routes {
 
     /// Add a default ipv6 gateway (ie. "ip -6 route add ::/0 via `gateway` dev `iface`").
     ///
-    /// Returns the previous default route, if any.
+    /// Returns the previous default route, if any. On error the previous
+    /// default route is kept.
     ///
     /// # Errors
+    /// - `NotUnicast`: if `gateway` is not a unicast address.
     /// - `Full`: if the table has no room. Only possible without the `alloc`
     ///   feature, where the limit is [`ROUTE_COUNT`].
     #[cfg(feature = "ipv6")]
-    pub fn add_default_ipv6_route(&mut self, gateway: Ipv6Addr, iface: IfaceHandle) -> Result<Option<Route>, Full> {
+    pub fn add_default_ipv6_route(
+        &mut self,
+        gateway: Ipv6Addr,
+        iface: IfaceHandle,
+    ) -> Result<Option<Route>, RouteError> {
+        if !IpAddr::from(gateway).is_unicast() {
+            return Err(RouteError::NotUnicast);
+        }
         let old = self.remove_default_ipv6_route();
         // If the table is full here, `old` was `None` and nothing was lost.
         self.add(Route::new_ipv6_gateway(gateway, iface))?;
@@ -231,6 +282,11 @@ impl Routes {
             .iter()
             // Keep only matching routes
             .filter(|route| {
+                // `add` rejects these, but `iter_mut` can still write one in. A
+                // gateway that isn't unicast can't be resolved as a next hop.
+                if !route.via_router.is_unicast() {
+                    return false;
+                }
                 if let Some(expires_at) = route.expires_at
                     && timestamp > expires_at
                 {
@@ -419,6 +475,50 @@ mod test {
 
         assert!(routes.remove_default_ipv4_route().is_some());
         assert!(routes.default_ipv4_route().is_none());
+    }
+
+    /// A gateway that isn't unicast is rejected, and a default route it would
+    /// have replaced stays.
+    #[test]
+    fn test_router_not_unicast() {
+        let mut routes = Routes::new();
+        let gw = Ipv4Addr::new(192, 168, 1, 1);
+        routes.add_default_ipv4_route(gw, IF_0).unwrap();
+
+        for bad in [Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST, Ipv4Addr::new(224, 0, 0, 1)] {
+            assert_eq!(
+                routes.add_default_ipv4_route(bad, IF_0).err(),
+                Some(RouteError::NotUnicast)
+            );
+            assert_eq!(
+                routes.add(Route {
+                    cidr: IpCidr::new(Ipv4Addr::new(10, 0, 0, 0).into(), 8),
+                    ..Route::new_ipv4_gateway(bad, IF_0)
+                }),
+                Err(RouteError::NotUnicast)
+            );
+        }
+        for bad in [Ipv6Addr::UNSPECIFIED, Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1)] {
+            assert_eq!(
+                routes.add_default_ipv6_route(bad, IF_0).err(),
+                Some(RouteError::NotUnicast)
+            );
+        }
+
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes.default_ipv4_route().unwrap().via_router, gw.into());
+    }
+
+    /// A route whose gateway was made non-unicast through `iter_mut` is
+    /// skipped by lookups.
+    #[test]
+    fn test_lookup_skips_router_not_unicast() {
+        let mut routes = Routes::new();
+        routes.add_default_ipv6_route(ADDR_1A, IF_0).unwrap();
+        assert_eq!(lookup(&routes, ADDR_2A, 0), Some((ADDR_1A.into(), IF_0)));
+
+        routes.iter_mut().next().unwrap().via_router = Ipv6Addr::UNSPECIFIED.into();
+        assert_eq!(lookup(&routes, ADDR_2A, 0), None);
     }
 
     #[test]
