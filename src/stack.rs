@@ -5134,6 +5134,31 @@ pub(crate) mod test {
         assert_eq!(room.get(), Some(0));
     }
 
+    /// A DNS query whose send finds the device full is not failed: it is treated
+    /// as lost, and the retransmission goes out once there is room.
+    #[test]
+    #[cfg(all(feature = "dns", feature = "medium-ip", feature = "ipv4"))]
+    fn test_device_full_dns_query_retransmits() {
+        use crate::dns::{DnsClient, GetQueryResultError};
+        use crate::wire::dns::Type;
+
+        let (mut stack, _rx, tx, room) = test_stack_with_room(Medium::Ip);
+        let mut dns = DnsClient::new(&mut stack, &[IpAddr::V4(REMOTE_V4)]).unwrap();
+        let query = dns.start_query(&mut stack, "example.com", Type::A).unwrap();
+
+        room.set(Some(0));
+        let _ = stack.poll(Instant::ZERO);
+        let deadline = dns.poll(&mut stack);
+        assert!(tx.borrow().is_empty());
+        assert_eq!(dns.get_query_result(query), Err(GetQueryResultError::Pending));
+
+        room.set(None);
+        let _ = stack.poll(deadline);
+        let _ = dns.poll(&mut stack);
+        assert_eq!(tx.borrow().len(), 1);
+        assert_eq!(dns.get_query_result(query), Err(GetQueryResultError::Pending));
+    }
+
     /// Packets parked on a neighbor resolution stay parked if the device has no
     /// room when the resolution comes in, and go out on a later poll.
     #[test]

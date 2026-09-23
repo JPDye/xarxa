@@ -608,16 +608,14 @@ impl DnsClient {
 
                 match stack.udp_socket(self.socket).send_slice(payload, dst) {
                     Ok(()) => {}
-                    Err(SendError::NoBuffer) => {
-                        // Transient: treat it as a lost query, the retransmit
-                        // timer below sends it again.
-                        trace!("send to {} failed: no packet buffer", dst);
+                    Err(e @ (SendError::NoBuffer | SendError::DeviceBusy)) => {
+                        // Transient errors: treat it as packet loss, the retransmit timer retries.
+                        trace!("send to {} failed: {:?}. Will retry.", dst, e);
                     }
                     Err(e) => {
-                        // `Unaddressable` is the "no source address for destination" case.
-                        // The others can't happen for a bound socket and a ≤512 byte payload.
+                        // Permanent errors: fail the query.
                         let _: SendError = e;
-                        trace!("send to {} failed: {:?}", dst, e);
+                        trace!("send to {} failed: {:?}. Query failed.", dst, e);
                         q.set_state(State::Failure);
                         continue;
                     }
