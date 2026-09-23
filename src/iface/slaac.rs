@@ -96,8 +96,10 @@ impl PrefixInformation {
     ///
     /// Also rejects multicast prefixes, which would form a multicast address.
     /// The RFC leaves that to the address architecture; Linux ignores them too.
+    /// And prefix lengths over 128, which RFC 4861 §4.6.2 rules out.
     fn is_valid_prefix_info(&self) -> bool {
-        self.flags.contains(NdiscPrefixInfoFlags::ADDRCONF)
+        self.prefix_len <= 128
+            && self.flags.contains(NdiscPrefixInfoFlags::ADDRCONF)
             && !self.prefix.is_link_local()
             && !self.prefix.is_multicast()
             && self.preferred_lifetime <= self.valid_lifetime
@@ -790,6 +792,17 @@ mod test {
         let now = Instant::from_millis(1);
         let mut prefix = PREFIX;
         prefix.prefix = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0);
+        advertise(&mut slaac, VALID, Some(prefix), now);
+        assert_eq!(slaac.prefix.len(), 0);
+    }
+
+    /// A prefix longer than an address is ignored.
+    #[test]
+    fn test_ra_prefix_too_long() {
+        let mut slaac = Slaac::new(SlaacConfig::default());
+        let now = Instant::from_millis(1);
+        let mut prefix = PREFIX;
+        prefix.prefix_len = 129;
         advertise(&mut slaac, VALID, Some(prefix), now);
         assert_eq!(slaac.prefix.len(), 0);
     }
