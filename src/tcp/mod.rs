@@ -69,7 +69,10 @@ define_handle! {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ListenError {
+    /// The listener is already listening on a different address, or
+    /// `bind_to_iface` was called while it is open.
     InvalidState,
+    /// The listen port is zero.
     Unaddressable,
     /// Another TCP listener is bound to the identical address.
     InUse,
@@ -116,7 +119,10 @@ impl core::error::Error for AcceptError {}
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ConnectError {
+    /// The socket is already open.
     InvalidState,
+    /// The remote port is zero, the remote address is unspecified, or there is
+    /// no route to the remote host or no local address to reach it from.
     Unaddressable,
     /// No free port in the ephemeral range (only possible with tens of thousands
     /// of open sockets).
@@ -2660,8 +2666,10 @@ impl<'d> TcpSocket<'_, 'd> {
     /// # Errors
     /// - `InvalidState`: if the socket is open (see
     ///   [is_open](#method.is_open)).
-    /// - `Unaddressable`: if the remote port is zero, or the remote address is
-    ///   unspecified.
+    /// - `Unaddressable`: if the remote port is zero, the remote address is
+    ///   unspecified, there is no route to the remote address, the interface
+    ///   the route goes out of has no address to send from, or `local` is an
+    ///   unspecified address of the other IP version.
     /// - `NoFreePorts`: if the ephemeral range is exhausted.
     /// - `InUse`: if another TCP socket already holds the identical 4-tuple.
     pub fn connect(
@@ -2766,6 +2774,9 @@ impl<'d> TcpSocket<'_, 'd> {
     }
 
     /// Close the transmit half of the full-duplex connection.
+    ///
+    /// Data that has been written to the socket and not yet sent (or not yet ACKed) will
+    /// still be sent. The last segment of the pending to send data is sent with the FIN flag set.
     ///
     /// Note that there is no corresponding function for the receive half of the full-duplex
     /// connection; only the remote end can close it. If you no longer wish to receive any
