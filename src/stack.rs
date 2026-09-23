@@ -27,6 +27,8 @@ use crate::icmp_error::parse_quoted_packet;
 #[cfg(all(any(feature = "medium-ethernet", feature = "medium-ieee802154"), feature = "ipv6"))]
 use crate::iface::link_local_addr;
 use crate::iface::{AddIfaceError, Iface, IfaceHandle, IfaceIter, IfaceState, Medium};
+#[cfg(all(any(feature = "medium-ethernet", feature = "medium-ieee802154"), feature = "ipv6"))]
+use crate::neighbor::NeighborState;
 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
 use crate::neighbor::{Answer as NeighborAnswer, Key as NeighborKey, NeighborCache, PendingQueue, ProbeEvent};
 use crate::rand::Rand;
@@ -1823,7 +1825,7 @@ impl<'d> Stack<'d> {
             #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
             Icmpv6Message::NeighborAdvert if hop_limit == 0xff && ll_src.is_some() => {
                 self.inner
-                    .process_ndisc_advert(self.ifaces.get_mut(iface.index()), src_addr, &mut icmp_packet)
+                    .process_ndisc_advert(self.ifaces.get_mut(iface.index()), dst_addr, &mut icmp_packet)
             }
 
             // [RFC 3810 § 6.2], reception checks
@@ -2217,7 +2219,7 @@ impl StackInner {
                 na.set_msg_type(Icmpv6Message::NeighborAdvert);
                 na.set_msg_code(0);
                 na.clear_reserved();
-                na.set_neighbor_flags(NdiscNeighborFlags::SOLICITED);
+                na.set_neighbor_flags(NdiscNeighborFlags::SOLICITED | NdiscNeighborFlags::OVERRIDE);
                 na.set_target_addr(target_addr);
                 write_lladdr_option(
                     na.payload_mut(),
@@ -2234,31 +2236,70 @@ impl StackInner {
         }
     }
 
+    /// Process a received neighbor advertisement, per RFC 4861 §7.2.5.
+    ///
+    /// The cache is keyed on the advertisement's *target* address, and an
+    /// advertisement for a target with no entry is discarded: we never asked
+    /// about it. The cache has no STALE state and does no NUD, so the cases
+    /// the RFC answers with "set STALE" keep the entry as it is (§7.2.5 I.a) or
+    /// record the new address as reachable (§7.2.5 II), and the IsRouter flag
+    /// is not tracked.
     #[cfg(all(any(feature = "medium-ethernet", feature = "medium-ieee802154"), feature = "ipv6"))]
     fn process_ndisc_advert(
         &mut self,
         iface: &mut IfaceState<'_>,
-        src_addr: Ipv6Addr,
+        dst_addr: Ipv6Addr,
         icmp_packet: &mut Icmpv6Packet<'_>,
     ) {
+        // Validation, RFC 4861 §7.1.2. Hop limit and length were checked by the caller.
         if icmp_packet.msg_code() != 0 {
             return;
         }
-
         let flags = icmp_packet.neighbor_flags();
         let target_addr = icmp_packet.target_addr();
-        let lladdr = check!(ndisc_lladdr_option(icmp_packet, NdiscOptionType::TargetLinkLayerAddr));
-
-        let ip_addr = IpAddr::V6(src_addr);
-        if let Some(lladdr) = lladdr {
-            let lladdr = check!(lladdr.parse(iface.medium()));
-            if !lladdr.is_unicast() || !target_addr.x_is_unicast() {
-                return;
+        if !target_addr.x_is_unicast() {
+            return;
+        }
+        if dst_addr.is_multicast() && flags.contains(NdiscNeighborFlags::SOLICITED) {
+            return;
+        }
+        let lladdr = match check!(ndisc_lladdr_option(icmp_packet, NdiscOptionType::TargetLinkLayerAddr)) {
+            Some(lladdr) => {
+                let lladdr = check!(lladdr.parse(iface.medium()));
+                if !lladdr.is_unicast() {
+                    return;
+                }
+                Some(lladdr)
             }
-            if flags.contains(NdiscNeighborFlags::OVERRIDE)
-                || !self.neighbor_cache.lookup(&(iface.handle, ip_addr), self.now).found()
-            {
-                self.fill_neighbor(iface, ip_addr, lladdr)
+            None => None,
+        };
+
+        let ip_addr = IpAddr::V6(target_addr);
+        let Some(entry) = self.neighbor_cache.get(iface.handle, ip_addr) else {
+            trace!("ndisc: advertisement for unknown target {}, discarded", target_addr);
+            return;
+        };
+        match entry.state {
+            NeighborState::Incomplete => {
+                // The Override flag is ignored in the INCOMPLETE state.
+                let Some(lladdr) = lladdr else {
+                    return;
+                };
+                self.fill_neighbor(iface, ip_addr, lladdr);
+            }
+            NeighborState::Reachable {
+                hardware_addr: cached, ..
+            } => {
+                let lladdr = lladdr.unwrap_or(cached);
+                if !flags.contains(NdiscNeighborFlags::OVERRIDE) && lladdr != cached {
+                    // §7.2.5 I: the cache keeps its address.
+                    return;
+                }
+                // §7.2.5 II: a supplied address is inserted, and a solicited
+                // advertisement confirms reachability.
+                if lladdr != cached || flags.contains(NdiscNeighborFlags::SOLICITED) {
+                    self.fill_neighbor(iface, ip_addr, lladdr);
+                }
             }
         }
     }
@@ -6044,5 +6085,383 @@ pub(crate) mod test {
         assert_eq!(sets(), [with_ab]);
         stack.iface(handle).leave_multicast_group(group_b).unwrap();
         assert_eq!(sets(), [sorted(&[ALL_SYSTEMS, ALL_NODES, SOL_LL, mac_v4])]);
+    }
+
+    /// An Ethernet frame from `src_hw` to `dst_hw` carrying `packet`.
+    fn eth_frame_from(
+        src_hw: EthernetAddress,
+        dst_hw: EthernetAddress,
+        ethertype: EthernetProtocol,
+        packet: &[u8],
+    ) -> Vec<u8> {
+        let mut frame = vec![0; ETHERNET_HEADER_LEN + packet.len()];
+        {
+            let mut eth = EthernetFrame::new_unchecked(&mut frame[..]);
+            eth.set_dst_addr(dst_hw);
+            eth.set_src_addr(src_hw);
+            eth.set_ethertype(ethertype);
+        }
+        frame[ETHERNET_HEADER_LEN..].copy_from_slice(packet);
+        frame
+    }
+
+    const OTHER_HW: EthernetAddress = EthernetAddress([0x02, 0, 0, 0, 0, 0x02]);
+
+    /// A neighbor advertisement from `src_addr` to `dst_addr` about `target`,
+    /// with the given flags and, if `lladdr` is set, a target link-layer option.
+    fn neighbor_advert(
+        src_addr: Ipv6Addr,
+        dst_addr: Ipv6Addr,
+        target: Ipv6Addr,
+        flags: NdiscNeighborFlags,
+        lladdr: Option<EthernetAddress>,
+    ) -> Vec<u8> {
+        let mut icmp = vec![0; 24 + if lladdr.is_some() { 8 } else { 0 }];
+        {
+            let mut na = Icmpv6Packet::new_unchecked(&mut icmp[..]);
+            na.set_msg_type(Icmpv6Message::NeighborAdvert);
+            na.set_msg_code(0);
+            na.clear_reserved();
+            na.set_neighbor_flags(flags);
+            na.set_target_addr(target);
+            if let Some(lladdr) = lladdr {
+                let mut opt = NdiscOption::new_unchecked(na.payload_mut());
+                opt.set_option_type(NdiscOptionType::TargetLinkLayerAddr);
+                opt.set_data_len(1);
+                opt.set_link_layer_addr(RawHardwareAddress::from(lladdr));
+            }
+            na.fill_checksum(&src_addr, &dst_addr);
+        }
+        let mut ip = ipv6_packet(src_addr, dst_addr, IpProtocol::Icmpv6, &icmp);
+        Ipv6Packet::new_unchecked(&mut ip[..]).set_hop_limit(255);
+        eth_frame_from(OTHER_HW, OUR_HW, EthernetProtocol::Ipv6, &ip)
+    }
+
+    /// The first frame transmitted for a datagram to `dst`: an IPv6 packet to
+    /// `Some(mac)` if the neighbor was known, or `None` for a neighbor solicitation.
+    fn send_udp_v6_and_classify(stack: &mut Stack<'static>, tx: &Sent, dst: Ipv6Addr) -> Option<EthernetAddress> {
+        let udp = stack.add_udp_socket().unwrap();
+        stack.udp_socket(udp).bind(5555, ListenSocketAddr::UNSPECIFIED).unwrap();
+        stack.udp_socket(udp).send_slice(b"hi", (dst, 1000)).unwrap();
+        stack.remove_udp_socket(udp);
+        let tx = tx.borrow();
+        assert_eq!(tx.len(), 1);
+        let mut frame = tx[0].clone();
+        let eth = EthernetFrame::new_checked(&mut frame[..]).unwrap();
+        assert_eq!(eth.ethertype(), EthernetProtocol::Ipv6);
+        let dst_hw = eth.dst_addr();
+        let mut bytes = frame[ETHERNET_HEADER_LEN..].to_vec();
+        let ip = Ipv6Packet::new_checked(&mut bytes[..]).unwrap();
+        if ip.next_header() == IpProtocol::Udp {
+            return Some(dst_hw);
+        }
+        assert_eq!(ip.next_header(), IpProtocol::Icmpv6);
+        let icmp = Icmpv6Packet::new_checked(&mut bytes[IPV6_HEADER_LEN..]).unwrap();
+        assert_eq!(icmp.msg_type(), Icmpv6Message::NeighborSolicit);
+        None
+    }
+
+    /// The hardware address the cache holds for `addr`, if the entry is reachable.
+    fn cached_lladdr(stack: &Stack<'static>, addr: Ipv6Addr) -> Option<EthernetAddress> {
+        match stack.neighbor_cache().get(IfaceHandle::new(0), addr.into())?.state {
+            NeighborState::Reachable {
+                hardware_addr: HardwareAddress::Ethernet(hw),
+                ..
+            } => Some(hw),
+            _ => None,
+        }
+    }
+
+    const NA_TARGET: Ipv6Addr = Ipv6Addr::new(0xfdaa, 0, 0, 0, 0, 0, 0, 0x22);
+    const NA_SRC: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
+    const NA_LLADDR: EthernetAddress = EthernetAddress([0x00, 0x00, 0x00, 0x00, 0x00, 0x01]);
+    const NA_LLADDR2: EthernetAddress = EthernetAddress([0x00, 0x00, 0x00, 0x00, 0x00, 0x02]);
+
+    /// A stack that is resolving [`NA_TARGET`]: the solicitation went out and the
+    /// entry is incomplete.
+    fn resolving_stack() -> (Stack<'static>, Queue, Sent) {
+        let (mut stack, rx, tx) = test_stack(Medium::Ethernet);
+        assert_eq!(send_udp_v6_and_classify(&mut stack, &tx, NA_TARGET), None);
+        tx.borrow_mut().clear();
+        assert_eq!(
+            stack
+                .neighbor_cache()
+                .get(IfaceHandle::new(0), NA_TARGET.into())
+                .map(|n| n.state),
+            Some(NeighborState::Incomplete)
+        );
+        (stack, rx, tx)
+    }
+
+    /// A stack that holds [`NA_TARGET`] as reachable at [`NA_LLADDR`].
+    fn resolved_stack() -> (Stack<'static>, Queue, Sent) {
+        let (mut stack, rx, tx) = resolving_stack();
+        let flags = NdiscNeighborFlags::SOLICITED | NdiscNeighborFlags::OVERRIDE;
+        inject(
+            &mut stack,
+            &rx,
+            neighbor_advert(NA_SRC, OUR_V6, NA_TARGET, flags, Some(NA_LLADDR)),
+        );
+        // The parked datagram was flushed.
+        assert_eq!(tx.borrow().len(), 1);
+        tx.borrow_mut().clear();
+        assert_eq!(cached_lladdr(&stack, NA_TARGET), Some(NA_LLADDR));
+        (stack, rx, tx)
+    }
+
+    /// An advertisement for a target with no cache entry is discarded (RFC 4861
+    /// §7.2.5): neither the target nor the source is cached afterwards.
+    #[test]
+    fn test_ndisc_advert_unknown_target_discarded() {
+        let (mut stack, rx, tx) = test_stack(Medium::Ethernet);
+        let flags = NdiscNeighborFlags::SOLICITED | NdiscNeighborFlags::OVERRIDE;
+        inject(
+            &mut stack,
+            &rx,
+            neighbor_advert(NA_SRC, OUR_V6, NA_TARGET, flags, Some(NA_LLADDR)),
+        );
+        assert!(tx.borrow().is_empty());
+        assert!(stack.neighbor_cache().is_empty());
+
+        assert_eq!(send_udp_v6_and_classify(&mut stack, &tx, NA_TARGET), None);
+    }
+
+    /// An advertisement resolves the *target*, not the address it was sent from:
+    /// the parked datagram goes out to the advertised address and the source
+    /// address stays unknown.
+    #[test]
+    fn test_ndisc_advert_fills_incomplete_target() {
+        let (mut stack, rx, tx) = resolving_stack();
+        // The Override flag is ignored in the INCOMPLETE state.
+        inject(
+            &mut stack,
+            &rx,
+            neighbor_advert(NA_SRC, OUR_V6, NA_TARGET, NdiscNeighborFlags::empty(), Some(NA_LLADDR)),
+        );
+        {
+            let tx = tx.borrow();
+            assert_eq!(tx.len(), 1);
+            let mut frame = tx[0].clone();
+            let eth = EthernetFrame::new_checked(&mut frame[..]).unwrap();
+            assert_eq!(eth.dst_addr(), NA_LLADDR);
+        }
+        tx.borrow_mut().clear();
+        assert_eq!(cached_lladdr(&stack, NA_TARGET), Some(NA_LLADDR));
+        assert!(stack.neighbor_cache().get(IfaceHandle::new(0), NA_SRC.into()).is_none());
+
+        assert_eq!(send_udp_v6_and_classify(&mut stack, &tx, NA_TARGET), Some(NA_LLADDR));
+    }
+
+    /// An advertisement without a target link-layer option is discarded while the
+    /// entry is incomplete.
+    #[test]
+    fn test_ndisc_advert_incomplete_without_lladdr_discarded() {
+        let (mut stack, rx, tx) = resolving_stack();
+        let flags = NdiscNeighborFlags::SOLICITED | NdiscNeighborFlags::OVERRIDE;
+        inject(&mut stack, &rx, neighbor_advert(NA_SRC, OUR_V6, NA_TARGET, flags, None));
+        assert!(tx.borrow().is_empty());
+        assert_eq!(
+            stack
+                .neighbor_cache()
+                .get(IfaceHandle::new(0), NA_TARGET.into())
+                .map(|n| n.state),
+            Some(NeighborState::Incomplete)
+        );
+    }
+
+    /// An advertisement whose link-layer address is not unicast is ignored.
+    #[test]
+    fn test_ndisc_advert_multicast_lladdr_ignored() {
+        let (mut stack, rx, tx) = resolving_stack();
+        let flags = NdiscNeighborFlags::SOLICITED | NdiscNeighborFlags::OVERRIDE;
+        inject(
+            &mut stack,
+            &rx,
+            neighbor_advert(NA_SRC, OUR_V6, NA_TARGET, flags, Some(EthernetAddress::BROADCAST)),
+        );
+        assert!(tx.borrow().is_empty());
+        assert_eq!(
+            stack
+                .neighbor_cache()
+                .get(IfaceHandle::new(0), NA_TARGET.into())
+                .map(|n| n.state),
+            Some(NeighborState::Incomplete)
+        );
+    }
+
+    /// An advertisement for a multicast target, or a solicited one sent to a
+    /// multicast address, fails validation (RFC 4861 §7.1.2).
+    #[test]
+    fn test_ndisc_advert_invalid_discarded() {
+        let (mut stack, rx, tx) = resolving_stack();
+        let all_nodes = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
+        let flags = NdiscNeighborFlags::SOLICITED | NdiscNeighborFlags::OVERRIDE;
+        inject(
+            &mut stack,
+            &rx,
+            neighbor_advert(NA_SRC, all_nodes, NA_TARGET, flags, Some(NA_LLADDR)),
+        );
+        inject(
+            &mut stack,
+            &rx,
+            neighbor_advert(NA_SRC, OUR_V6, all_nodes, flags, Some(NA_LLADDR)),
+        );
+        assert!(tx.borrow().is_empty());
+        assert_eq!(
+            stack
+                .neighbor_cache()
+                .get(IfaceHandle::new(0), NA_TARGET.into())
+                .map(|n| n.state),
+            Some(NeighborState::Incomplete)
+        );
+
+        // An unsolicited advertisement to a multicast address is valid.
+        inject(
+            &mut stack,
+            &rx,
+            neighbor_advert(
+                NA_SRC,
+                all_nodes,
+                NA_TARGET,
+                NdiscNeighborFlags::OVERRIDE,
+                Some(NA_LLADDR),
+            ),
+        );
+        assert_eq!(cached_lladdr(&stack, NA_TARGET), Some(NA_LLADDR));
+    }
+
+    /// On a reachable entry, a different address is only taken with the Override
+    /// flag set (RFC 4861 §7.2.5 I and II).
+    #[test]
+    fn test_ndisc_advert_override() {
+        let (mut stack, rx, tx) = resolved_stack();
+        inject(
+            &mut stack,
+            &rx,
+            neighbor_advert(
+                NA_SRC,
+                OUR_V6,
+                NA_TARGET,
+                NdiscNeighborFlags::SOLICITED,
+                Some(NA_LLADDR2),
+            ),
+        );
+        assert_eq!(cached_lladdr(&stack, NA_TARGET), Some(NA_LLADDR));
+
+        inject(
+            &mut stack,
+            &rx,
+            neighbor_advert(
+                NA_SRC,
+                OUR_V6,
+                NA_TARGET,
+                NdiscNeighborFlags::OVERRIDE,
+                Some(NA_LLADDR2),
+            ),
+        );
+        assert_eq!(cached_lladdr(&stack, NA_TARGET), Some(NA_LLADDR2));
+        assert!(tx.borrow().is_empty());
+
+        assert_eq!(send_udp_v6_and_classify(&mut stack, &tx, NA_TARGET), Some(NA_LLADDR2));
+    }
+
+    /// On a reachable entry, a solicited advertisement confirming the cached
+    /// address refreshes the entry, and one without a link-layer option does too.
+    #[test]
+    fn test_ndisc_advert_refreshes_reachable() {
+        let (mut stack, rx, tx) = resolved_stack();
+        let inject_at = |stack: &mut Stack<'static>, bytes: Vec<u8>, at: Instant| {
+            rx.borrow_mut().push_back(bytes);
+            stack.poll(at);
+        };
+        let expires_at = |stack: &Stack<'static>| match stack
+            .neighbor_cache()
+            .get(IfaceHandle::new(0), NA_TARGET.into())
+            .unwrap()
+            .state
+        {
+            NeighborState::Reachable { expires_at, .. } => expires_at,
+            NeighborState::Incomplete => panic!("incomplete"),
+        };
+        let t0 = expires_at(&stack);
+
+        // Unsolicited, same address: nothing changes.
+        inject_at(
+            &mut stack,
+            neighbor_advert(NA_SRC, OUR_V6, NA_TARGET, NdiscNeighborFlags::empty(), Some(NA_LLADDR)),
+            Instant::from_secs(10),
+        );
+        assert_eq!(expires_at(&stack), t0);
+
+        // Solicited, same address: refreshed.
+        inject_at(
+            &mut stack,
+            neighbor_advert(
+                NA_SRC,
+                OUR_V6,
+                NA_TARGET,
+                NdiscNeighborFlags::SOLICITED,
+                Some(NA_LLADDR),
+            ),
+            Instant::from_secs(10),
+        );
+        let t1 = expires_at(&stack);
+        assert!(t1 > t0);
+
+        // Solicited, no option: refreshed, address kept.
+        inject_at(
+            &mut stack,
+            neighbor_advert(NA_SRC, OUR_V6, NA_TARGET, NdiscNeighborFlags::SOLICITED, None),
+            Instant::from_secs(20),
+        );
+        assert!(expires_at(&stack) > t1);
+        assert_eq!(cached_lladdr(&stack, NA_TARGET), Some(NA_LLADDR));
+        assert!(tx.borrow().is_empty());
+    }
+
+    /// The advertisement answering a solicitation: hop limit 255, our address as
+    /// the target link-layer option, and the requester's own option cached.
+    #[test]
+    fn test_ndisc_solicit_reply_details() {
+        let remote_ll = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0xff, 0xfe00, 0x2);
+        let (mut stack, rx, tx) = test_stack(Medium::Ethernet);
+        inject(
+            &mut stack,
+            &rx,
+            neighbor_solicit(OTHER_HW, remote_ll, OUR_LINK_LOCAL.solicited_node(), OUR_LINK_LOCAL),
+        );
+        {
+            let tx = tx.borrow();
+            assert_eq!(tx.len(), 1);
+            let mut frame = tx[0].clone();
+            let eth = EthernetFrame::new_checked(&mut frame[..]).unwrap();
+            assert_eq!(eth.dst_addr(), OTHER_HW);
+            assert_eq!(eth.src_addr(), OUR_HW);
+            let mut bytes = frame[ETHERNET_HEADER_LEN..].to_vec();
+            let ip = Ipv6Packet::new_checked(&mut bytes[..]).unwrap();
+            assert_eq!(ip.hop_limit(), 255);
+            assert_eq!(ip.src_addr(), OUR_LINK_LOCAL);
+            assert_eq!(ip.dst_addr(), remote_ll);
+            let mut icmp_bytes = bytes[IPV6_HEADER_LEN..].to_vec();
+            let na = Icmpv6Packet::new_checked(&mut icmp_bytes[..]).unwrap();
+            assert_eq!(na.msg_type(), Icmpv6Message::NeighborAdvert);
+            assert_eq!(na.msg_code(), 0);
+            assert_eq!(na.target_addr(), OUR_LINK_LOCAL);
+            assert_eq!(
+                na.neighbor_flags(),
+                NdiscNeighborFlags::SOLICITED | NdiscNeighborFlags::OVERRIDE
+            );
+            let mut opt_bytes = na.payload().to_vec();
+            let opt = NdiscOption::new_checked(&mut opt_bytes[..]).unwrap();
+            assert_eq!(opt.option_type(), NdiscOptionType::TargetLinkLayerAddr);
+            assert_eq!(
+                opt.link_layer_addr().parse(Medium::Ethernet),
+                Ok(HardwareAddress::Ethernet(OUR_HW))
+            );
+        }
+        tx.borrow_mut().clear();
+
+        // The solicitation's source link-layer option was cached.
+        assert_eq!(send_udp_v6_and_classify(&mut stack, &tx, remote_ll), Some(OTHER_HW));
     }
 }

@@ -77,14 +77,11 @@ pub(crate) enum Answer {
     NotFound,
 }
 
+#[cfg(all(test, feature = "ipv6"))]
 impl Answer {
     /// Returns whether a valid address was found.
-    #[cfg(feature = "ipv6")]
     pub(crate) fn found(&self) -> bool {
-        match self {
-            Answer::Found(_) => true,
-            _ => false,
-        }
+        matches!(self, Answer::Found(_))
     }
 }
 
