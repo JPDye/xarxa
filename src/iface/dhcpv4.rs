@@ -369,7 +369,11 @@ impl Client {
         let lease = DhcpLease {
             server,
             address: Ipv4Cidr::new(packet.your_ip(), prefix_len),
-            router: packet.option(field::OPT_ROUTER).and_then(parse_ipv4),
+            // A router that isn't unicast can't be a next hop.
+            router: packet
+                .option(field::OPT_ROUTER)
+                .and_then(parse_ipv4)
+                .filter(|r| r.x_is_unicast()),
             dns_servers,
             #[cfg(feature = "dhcpv4-options")]
             options,
@@ -1851,6 +1855,31 @@ mod test {
         let lease = stack.iface(IFACE).dhcpv4_lease().cloned().unwrap();
         let want = &all[..DHCP_MAX_DNS_SERVER_COUNT.min(all.len())];
         assert_eq!(&lease.dns_servers[..], want);
+    }
+
+    /// A router that isn't unicast is ignored: no default route is installed.
+    #[test]
+    fn test_ack_router_not_unicast() {
+        let options = ack_options_with(
+            field::OPT_ROUTER,
+            DhcpOption {
+                kind: field::OPT_ROUTER,
+                data: &[0, 0, 0, 0],
+            },
+        );
+
+        let (mut stack, rx, _tx) = test_stack();
+        stack.poll(at(0)); // DISCOVER
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Offer, XID, OFFERED_IP, &options));
+        stack.poll(at(1)); // REQUEST
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Ack, XID, OFFERED_IP, &options));
+        stack.poll(at(2));
+
+        let lease = stack.iface(IFACE).dhcpv4_lease().cloned().unwrap();
+        assert_eq!(lease.router, None);
+        assert!(stack.routes().default_ipv4_route().is_none());
     }
 
     /// The lease time option is taken as is: a 598 s lease renews after 299 s
