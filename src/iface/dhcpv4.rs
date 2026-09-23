@@ -604,6 +604,12 @@ impl IfaceState<'_> {
                     debug!("DHCP ignoring OFFER because your_ip is not unicast");
                     return;
                 }
+                // Renewals are unicast to where the offer came from. A server or
+                // relay always sends from its own address (RFC 2131 §4.1).
+                if !src_ip.x_is_unicast() {
+                    debug!("DHCP ignoring OFFER because its source is not unicast");
+                    return;
+                }
 
                 client.state = ClientState::Requesting(RequestState {
                     retry_at: now,
@@ -911,6 +917,17 @@ mod test {
 
     /// A server reply as a whole Ethernet frame, unicast to our MAC and to `dst_ip`.
     fn reply(message_type: DhcpMessageType, xid: u32, dst_ip: Ipv4Addr, options: &[DhcpOption<'_>]) -> Vec<u8> {
+        reply_from(SERVER_IP, message_type, xid, dst_ip, options)
+    }
+
+    /// Like [`reply`], sent from `src_ip`.
+    fn reply_from(
+        src_ip: Ipv4Addr,
+        message_type: DhcpMessageType,
+        xid: u32,
+        dst_ip: Ipv4Addr,
+        options: &[DhcpOption<'_>],
+    ) -> Vec<u8> {
         let mut dhcp = vec![0; 576];
         let dhcp_len = {
             let mut packet = DhcpPacket::new_unchecked(&mut dhcp);
@@ -961,7 +978,7 @@ mod test {
             ip.set_total_len((IPV4_HEADER_LEN + UDP_HEADER_LEN + dhcp_len) as u16);
             ip.set_next_header(IpProtocol::Udp);
             ip.set_hop_limit(64);
-            ip.set_src_addr(SERVER_IP);
+            ip.set_src_addr(src_ip);
             ip.set_dst_addr(dst_ip);
             ip.fill_checksum();
         }
@@ -971,7 +988,7 @@ mod test {
             udp.set_dst_port(DHCP_CLIENT_PORT);
             udp.set_len((UDP_HEADER_LEN + dhcp_len) as u16);
             udp.payload_mut().copy_from_slice(&dhcp);
-            udp.fill_checksum(&IpAddr::V4(SERVER_IP), &IpAddr::V4(dst_ip));
+            udp.fill_checksum(&IpAddr::V4(src_ip), &IpAddr::V4(dst_ip));
         }
         frame
     }
@@ -1288,6 +1305,23 @@ mod test {
         stack.poll(at(0));
         rx.borrow_mut()
             .push_back(reply(DhcpMessageType::Offer, XID + 1, OFFERED_IP, &ack_options()));
+        stack.poll(at(1));
+        assert_eq!(tx.borrow().len(), 1);
+    }
+
+    /// Renewals go to where the offer came from, so an offer from `0.0.0.0` is
+    /// ignored.
+    #[test]
+    fn test_offer_from_unspecified_ignored() {
+        let (mut stack, rx, tx) = test_stack();
+        stack.poll(at(0));
+        rx.borrow_mut().push_back(reply_from(
+            Ipv4Addr::UNSPECIFIED,
+            DhcpMessageType::Offer,
+            XID,
+            OFFERED_IP,
+            &ack_options(),
+        ));
         stack.poll(at(1));
         assert_eq!(tx.borrow().len(), 1);
     }
