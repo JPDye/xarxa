@@ -459,12 +459,18 @@ mod test {
 
         assert!(IPV4_STR_PORT.parse::<IpAddr>().is_err());
         assert!(IPV6_STR_PORT.parse::<IpAddr>().is_err());
+        assert!("".parse::<IpAddr>().is_err());
+        assert!("x".parse::<IpAddr>().is_err());
     }
 
     #[cfg(feature = "ipv4")]
     #[test]
     fn parse_socket_v4() {
         assert_eq!(IPV4_STR_PORT.parse(), Ok(SocketAddr::new(IpAddr::V4(IPV4), PORT)));
+        assert_eq!(
+            "0.0.0.0:0".parse(),
+            Ok(SocketAddr::new(IpAddr::V4(::core::net::Ipv4Addr::UNSPECIFIED), 0))
+        );
 
         assert!(IPV4_STR.parse::<SocketAddr>().is_err());
         assert!(IPV6_STR_FULL.parse::<SocketAddr>().is_err());
@@ -476,6 +482,10 @@ mod test {
     #[test]
     fn parse_socket_v6() {
         assert_eq!(IPV6_STR_PORT.parse(), Ok(SocketAddr::new(IpAddr::V6(IPV6), PORT)));
+        assert_eq!(
+            "[::]:8080".parse(),
+            Ok(SocketAddr::new(IpAddr::V6(::core::net::Ipv6Addr::UNSPECIFIED), PORT))
+        );
 
         assert!(IPV4_STR.parse::<SocketAddr>().is_err());
         assert!(IPV6_STR_FULL.parse::<SocketAddr>().is_err());
@@ -505,6 +515,8 @@ mod test {
         assert!(IPV6_STR_FULL.parse::<SocketAddr>().is_err());
         assert!(IPV6_STR_COMPRESS.parse::<SocketAddr>().is_err());
         assert!(IPV6_STR_V4.parse::<SocketAddr>().is_err());
+        assert!("".parse::<SocketAddr>().is_err());
+        assert!("x".parse::<SocketAddr>().is_err());
     }
 
     /// Ports are read like `core::net` reads them: decimal digits only, any
@@ -549,6 +561,7 @@ mod test {
             assert!("[]:80".parse::<SocketAddr>().is_err());
             assert!("[[::1]]:80".parse::<SocketAddr>().is_err());
             assert!("[::1]:80]".parse::<SocketAddr>().is_err());
+            assert!("[::1:80".parse::<SocketAddr>().is_err());
         }
     }
 
@@ -603,6 +616,13 @@ mod test {
         assert!("192.168.0.1/24/25".parse::<Ipv4Cidr>().is_err());
         assert!(IPV4_STR_WITH_OCTAL.parse::<Ipv4Cidr>().is_err());
         assert!("/24".parse::<Ipv4Cidr>().is_err());
+        assert!("1".parse::<Ipv4Cidr>().is_err());
+        assert!("".parse::<Ipv4Cidr>().is_err());
+
+        assert!("192.168.0.1/33".parse::<IpCidr>().is_err());
+        assert!("192.168.0.1".parse::<IpCidr>().is_err());
+        assert!("/24".parse::<IpCidr>().is_err());
+        assert!("".parse::<IpCidr>().is_err());
     }
 
     #[cfg(feature = "ipv6")]
@@ -621,6 +641,12 @@ mod test {
         assert!("2001:db8::c0a8:1".parse::<Ipv6Cidr>().is_err());
         assert!("[2001:db8::c0a8:1]/64".parse::<Ipv6Cidr>().is_err());
         assert!("fe80::1%1337/64".parse::<Ipv6Cidr>().is_err());
+        assert!("2001:db8::c0a8:1|64".parse::<Ipv6Cidr>().is_err());
+        assert!("fe80::1::/64".parse::<Ipv6Cidr>().is_err());
+
+        assert!("2001:db8::c0a8:1/129".parse::<IpCidr>().is_err());
+        assert!("2001:db8::c0a8:1|64".parse::<IpCidr>().is_err());
+        assert!("fe80::1::/64".parse::<IpCidr>().is_err());
     }
 
     /// Everything the `Display` impls print parses back to the same value.

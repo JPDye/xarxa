@@ -599,6 +599,34 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "std")]
+    fn test_instant_conversions() {
+        let mut epoc: ::std::time::SystemTime = Instant::from_millis(0).into();
+        assert_eq!(Instant::from(::std::time::UNIX_EPOCH), Instant::from_millis(0));
+        assert_eq!(epoc, ::std::time::UNIX_EPOCH);
+        epoc = Instant::from_millis(2085955200i64 * 1000).into();
+        assert_eq!(
+            epoc,
+            ::std::time::UNIX_EPOCH + ::std::time::Duration::from_secs(2085955200)
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn test_instant_conversions_from_std_instant() {
+        let std_now = ::std::time::Instant::now();
+
+        let before = Instant::from(std_now);
+        ::std::thread::sleep(::std::time::Duration::from_millis(5));
+        let after = Instant::from(std_now);
+
+        assert_eq!(
+            before, after,
+            "converting the same std Instant twice should yield the same result"
+        );
+    }
+
+    #[test]
     fn test_duration_ops() {
         // std::ops::Add
         assert_eq!(

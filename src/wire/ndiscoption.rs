@@ -125,6 +125,7 @@ mod field {
     //  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
     //  MTU
+    pub const MTU_RESERVED: Field = 2..4;
     pub const MTU: Field = 4..8;
 }
 
@@ -280,6 +281,12 @@ impl<'a> NdiscOption<'a> {
 
 /// Setter methods only relevant for the MTU option.
 impl<'a> NdiscOption<'a> {
+    /// Clear the reserved area of the MTU option.
+    #[inline]
+    pub fn clear_mtu_reserved(&mut self) {
+        NetworkEndian::write_u16(&mut self.buffer[field::MTU_RESERVED], 0);
+    }
+
     /// Set the MTU value.
     #[inline]
     pub fn set_mtu(&mut self, value: u32) {
@@ -348,6 +355,7 @@ impl<'a> NdiscOption<'a> {
 mod test {
     use super::Malformed;
     use super::{NdiscOption, PrefixInfoFlags, Type};
+    use crate::time::Duration;
     use crate::wire::Ipv6Addr;
 
     static PREFIX_OPT_BYTES: [u8; 32] = [
@@ -363,7 +371,75 @@ mod test {
         assert_eq!(opt.data_len(), 4);
         assert_eq!(opt.prefix_len(), 64);
         assert_eq!(opt.prefix_flags(), PrefixInfoFlags::ON_LINK | PrefixInfoFlags::ADDRCONF);
+        assert_eq!(opt.valid_lifetime(), Duration::from_secs(900));
+        assert_eq!(opt.preferred_lifetime(), Duration::from_secs(1000));
         assert_eq!(opt.prefix(), Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
+    }
+
+    #[test]
+    fn test_construct() {
+        // Into a buffer full of stale bytes: every byte of the option is written.
+        let mut bytes = [0x2a; 32];
+        let mut opt = NdiscOption::new_unchecked(&mut bytes[..]);
+        opt.set_option_type(Type::PrefixInformation);
+        opt.set_data_len(4);
+        opt.set_prefix_len(64);
+        opt.set_prefix_flags(PrefixInfoFlags::ON_LINK | PrefixInfoFlags::ADDRCONF);
+        opt.set_valid_lifetime(Duration::from_secs(900));
+        opt.set_preferred_lifetime(Duration::from_secs(1000));
+        opt.clear_prefix_reserved();
+        opt.set_prefix(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
+        assert_eq!(&bytes[..], &PREFIX_OPT_BYTES[..]);
+    }
+
+    #[test]
+    fn test_mtu() {
+        let mut bytes = [0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0x05, 0xdc];
+        let opt = NdiscOption::new_checked(&mut bytes[..]).unwrap();
+        assert_eq!(opt.option_type(), Type::Mtu);
+        assert_eq!(opt.data_len(), 1);
+        assert_eq!(opt.mtu(), 1500);
+
+        let mut built = [0x2a; 8];
+        let mut opt = NdiscOption::new_unchecked(&mut built[..]);
+        opt.set_option_type(Type::Mtu);
+        opt.set_data_len(1);
+        opt.clear_mtu_reserved();
+        opt.set_mtu(1500);
+        assert_eq!(built, bytes);
+    }
+
+    /// An 8-byte link-layer address option (data length 1) carries an Ethernet
+    /// address, as a source or a target option alike.
+    #[test]
+    #[cfg(feature = "medium-ethernet")]
+    fn test_link_layer_addr_ethernet() {
+        use crate::iface::Medium;
+        use crate::wire::{EthernetAddress, HardwareAddress};
+        let mut bytes = [0x01, 0x01, 0x54, 0x52, 0x00, 0x12, 0x23, 0x34];
+        let addr = HardwareAddress::Ethernet(EthernetAddress([0x54, 0x52, 0x00, 0x12, 0x23, 0x34]));
+        {
+            let opt = NdiscOption::new_checked(&mut bytes[..]).unwrap();
+            assert_eq!(opt.option_type(), Type::SourceLinkLayerAddr);
+            assert_eq!(opt.data_len(), 1);
+            assert_eq!(opt.link_layer_addr().parse(Medium::Ethernet), Ok(addr));
+            #[cfg(feature = "medium-ieee802154")]
+            assert!(opt.link_layer_addr().parse(Medium::Ieee802154).is_err());
+        }
+        bytes[0] = 0x02;
+        {
+            let opt = NdiscOption::new_checked(&mut bytes[..]).unwrap();
+            assert_eq!(opt.option_type(), Type::TargetLinkLayerAddr);
+            assert_eq!(opt.link_layer_addr().parse(Medium::Ethernet), Ok(addr));
+        }
+
+        // The same option, built with the setters.
+        let mut built = [0x2a; 8];
+        let mut opt = NdiscOption::new_unchecked(&mut built[..]);
+        opt.set_option_type(Type::TargetLinkLayerAddr);
+        opt.set_data_len(1);
+        opt.set_link_layer_addr(addr.into());
+        assert_eq!(built, bytes);
     }
 
     /// A 16-byte link-layer address option (data length 2) carries an

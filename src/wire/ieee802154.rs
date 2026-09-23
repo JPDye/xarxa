@@ -538,6 +538,17 @@ mod test {
         assert!(!Address::BROADCAST.is_unicast());
     }
 
+    /// Only an extended address has an EUI-64: the address with the U/L bit flipped.
+    #[test]
+    fn test_as_eui_64() {
+        assert_eq!(
+            Address::Extended([0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77]).as_eui_64(),
+            Some([0x02, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77])
+        );
+        assert_eq!(Address::Short([0x12, 0x34]).as_eui_64(), None);
+        assert_eq!(Address::Absent.as_eui_64(), None);
+    }
+
     /// Emitting a header and parsing it back round-trips, even into a buffer
     /// full of stale bytes: emit writes every byte of the header.
     #[test]

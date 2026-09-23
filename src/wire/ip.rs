@@ -24,7 +24,11 @@ impl Version {
     /// - `Malformed`: if the version is neither 4 nor 6, or the build has no
     ///   feature for it.
     pub const fn of_packet(data: &[u8]) -> Result<Version, Malformed> {
-        match data[0] >> 4 {
+        let first = match data {
+            [first, ..] => *first,
+            [] => return Err(Malformed),
+        };
+        match first >> 4 {
             #[cfg(feature = "ipv4")]
             4 => Ok(Version::V4),
             #[cfg(feature = "ipv6")]
@@ -693,6 +697,20 @@ pub(crate) mod test {
     fn test_print_ipv6_cidr() {
         let cidr = Cidr::new(Ipv6Addr::LOCALHOST.into(), 128);
         assert_eq!("::1/128", format!("{cidr}"));
+    }
+
+    /// `Version::of_packet` dispatches on the first nibble, and never panics on
+    /// a short buffer.
+    #[test]
+    fn test_version_of_packet() {
+        assert_eq!(Version::of_packet(&[]), Err(Malformed));
+        assert_eq!(Version::of_packet(&[0xff]), Err(Malformed));
+        assert_eq!(Version::of_packet(&[0x50]), Err(Malformed));
+        assert_eq!(Version::of_packet(&[0x00]), Err(Malformed));
+        #[cfg(feature = "ipv4")]
+        assert_eq!(Version::of_packet(&[0x45]), Ok(Version::V4));
+        #[cfg(feature = "ipv6")]
+        assert_eq!(Version::of_packet(&[0x60]), Ok(Version::V6));
     }
 
     #[cfg(feature = "ipv4")]

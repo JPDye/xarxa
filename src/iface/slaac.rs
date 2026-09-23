@@ -629,6 +629,40 @@ mod test {
         );
     }
 
+    /// `from_link_prefix` forms prefix + EUI-64, for a /64 prefix only.
+    #[test]
+    fn test_from_link_prefix() {
+        let prefix = Ipv6Cidr::new(Ipv6Addr::new(0x2001, 0xdb8, 3, 0, 0, 0, 0, 0), 64);
+        #[cfg(feature = "medium-ethernet")]
+        {
+            let hw = HardwareAddress::Ethernet(crate::wire::EthernetAddress([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]));
+            assert_eq!(
+                from_link_prefix(&prefix, hw),
+                Some(Ipv6Cidr::new(
+                    Ipv6Addr::new(0x2001, 0xdb8, 3, 0, 0xa8bb, 0xccff, 0xfedd, 0xeeff),
+                    64
+                ))
+            );
+            let long_prefix = Ipv6Cidr::new(Ipv6Addr::new(0x2001, 0xdb8, 3, 0, 0, 0, 0, 0), 72);
+            assert_eq!(from_link_prefix(&long_prefix, hw), None);
+        }
+        #[cfg(feature = "medium-ieee802154")]
+        {
+            let hw = HardwareAddress::Ieee802154(crate::wire::Ieee802154Address::Extended([
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+            ]));
+            assert_eq!(
+                from_link_prefix(&prefix, hw),
+                Some(Ipv6Cidr::new(
+                    Ipv6Addr::new(0x2001, 0xdb8, 3, 0, 0x211, 0x2233, 0x4455, 0x6677),
+                    64
+                ))
+            );
+            let short = HardwareAddress::Ieee802154(crate::wire::Ieee802154Address::Short([0x12, 0x34]));
+            assert_eq!(from_link_prefix(&prefix, short), None);
+        }
+    }
+
     #[test]
     fn test_route() {
         assert!(ROUTE.same_route(&Ipv6Cidr::new(Ipv6Addr::UNSPECIFIED, 0), &SOURCE));

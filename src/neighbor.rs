@@ -683,6 +683,30 @@ mod test {
     }
 
     #[test]
+    fn test_flush() {
+        let mut cache = NeighborCache::new();
+
+        cache.fill(key(MOCK_IP_ADDR_1), HADDR_A, Instant::ZERO);
+        cache.fill((IF_1, MOCK_IP_ADDR_2.into()), HADDR_B, Instant::ZERO);
+        assert_eq!(
+            cache.lookup(&key(MOCK_IP_ADDR_1), Instant::ZERO),
+            Answer::Found(HADDR_A)
+        );
+        assert_eq!(
+            cache.lookup(&(IF_1, MOCK_IP_ADDR_2.into()), Instant::ZERO),
+            Answer::Found(HADDR_B)
+        );
+        assert_eq!(cache.len(), 2);
+
+        // Clearing removes every entry, on every interface.
+        cache.clear();
+        assert!(!cache.lookup(&key(MOCK_IP_ADDR_1), Instant::ZERO).found());
+        assert!(!cache.lookup(&(IF_1, MOCK_IP_ADDR_2.into()), Instant::ZERO).found());
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
     fn test_evict() {
         let mut cache = NeighborCache::new();
 

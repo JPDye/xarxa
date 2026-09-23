@@ -1245,23 +1245,6 @@ mod test {
     }
 
     #[test]
-    fn test_rebind_broadcasts() {
-        let (mut stack, _rx, tx) = bound_stack();
-
-        // Past T2 (7/8 of the 600 s lease) with no answer from the server, the
-        // REQUEST is broadcast instead.
-        let mut t = 302;
-        while t < 530 {
-            stack.poll(at(t));
-            t += 1;
-        }
-        let sent = parse_sent(tx.borrow().last().unwrap());
-        assert_eq!(sent.src_ip, OFFERED_IP);
-        assert_eq!(sent.dst_ip, Ipv4Addr::BROADCAST);
-        assert!(stack.iface(IFACE).dhcpv4_lease().is_some());
-    }
-
-    #[test]
     fn test_expire() {
         let (mut stack, _rx, tx) = bound_stack();
 
@@ -1307,18 +1290,6 @@ mod test {
             .push_back(reply(DhcpMessageType::Offer, XID + 1, OFFERED_IP, &ack_options()));
         stack.poll(at(1));
         assert_eq!(tx.borrow().len(), 1);
-    }
-
-    #[test]
-    fn test_discover_retransmit() {
-        let (mut stack, _rx, tx) = test_stack();
-        stack.poll(at(0));
-        stack.poll(at(9));
-        assert_eq!(tx.borrow().len(), 1);
-        stack.poll(at(10));
-        assert_eq!(tx.borrow().len(), 2);
-        let mut sent = parse_sent(&tx.borrow()[1]);
-        assert_eq!(message_type(&mut sent), DhcpMessageType::Discover);
     }
 
     #[test]
@@ -1491,5 +1462,490 @@ mod test {
         // No DISCOVER goes out.
         stack.poll(at(0));
         assert!(tx.borrow().is_empty());
+    }
+
+    fn ms(millis: i64) -> Instant {
+        Instant::from_millis(millis)
+    }
+
+    fn transaction_id(sent: &mut SentDhcp) -> u32 {
+        DhcpPacket::new_checked(&mut sent.dhcp).unwrap().transaction_id()
+    }
+
+    /// [`ack_options`] with the option of kind `kind` swapped for `option`.
+    fn ack_options_with(kind: u8, option: DhcpOption<'static>) -> Vec<DhcpOption<'static>> {
+        let mut options = ack_options();
+        options.retain(|o| o.kind != kind);
+        options.push(option);
+        options
+    }
+
+    /// Check that a frame is a DISCOVER from 0.0.0.0 to broadcast. Returns its xid.
+    fn assert_discover(frame: &[u8]) -> u32 {
+        let mut sent = parse_sent(frame);
+        assert_eq!(sent.src_ip, Ipv4Addr::UNSPECIFIED);
+        assert_eq!(sent.dst_ip, Ipv4Addr::BROADCAST);
+        assert_eq!(sent.dst_hw, EthernetAddress::BROADCAST);
+        assert_eq!(message_type(&mut sent), DhcpMessageType::Discover);
+        transaction_id(&mut sent)
+    }
+
+    /// Check that a frame is the REQUEST answering an OFFER: broadcast from
+    /// 0.0.0.0, asking the offering server for the offered address, with the
+    /// DISCOVER's xid.
+    fn assert_initial_request(frame: &[u8], xid: u32) {
+        let mut sent = parse_sent(frame);
+        assert_eq!(sent.src_ip, Ipv4Addr::UNSPECIFIED);
+        assert_eq!(sent.dst_ip, Ipv4Addr::BROADCAST);
+        assert_eq!(sent.dst_hw, EthernetAddress::BROADCAST);
+        assert_eq!(message_type(&mut sent), DhcpMessageType::Request);
+        let packet = DhcpPacket::new_checked(&mut sent.dhcp).unwrap();
+        assert_eq!(packet.transaction_id(), xid);
+        assert_eq!(packet.client_ip(), Ipv4Addr::UNSPECIFIED);
+        assert_eq!(packet.option(field::OPT_REQUESTED_IP), Some(&OFFERED_IP.octets()[..]));
+        assert_eq!(
+            packet.option(field::OPT_SERVER_IDENTIFIER),
+            Some(&SERVER_IP.octets()[..])
+        );
+    }
+
+    /// Drive the client to REQUESTING at `at(0)`: DISCOVER, OFFER, REQUEST, all
+    /// at time zero. Returns the xid of the exchange.
+    fn requesting_stack_with(config: DhcpConfig) -> (Stack<'static>, Queue, Sent, u32) {
+        let (mut stack, rx, tx) = test_stack();
+        stack.iface(IFACE).set_dhcpv4(Some(config)).unwrap();
+
+        stack.poll(at(0));
+        assert_eq!(tx.borrow().len(), 1);
+        let xid = assert_discover(&tx.borrow()[0]);
+
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Offer, xid, OFFERED_IP, &ack_options()));
+        stack.poll(at(0));
+        assert_eq!(tx.borrow().len(), 2);
+        assert_initial_request(&tx.borrow()[1], xid);
+        assert!(stack.iface(IFACE).dhcpv4_lease().is_none());
+
+        (stack, rx, tx, xid)
+    }
+
+    fn requesting_stack() -> (Stack<'static>, Queue, Sent, u32) {
+        requesting_stack_with(DhcpConfig::default())
+    }
+
+    /// Exactly [`test_renew`]'s setup, up to the renew REQUEST at T1 (32 s):
+    /// a lease capped at 60 s, the server's MAC learned from an ARP request.
+    /// Returns the xid of the renew REQUEST.
+    fn renewing_stack_with(mut config: DhcpConfig) -> (Stack<'static>, Queue, Sent, u32) {
+        config.max_lease_duration = Some(Duration::from_secs(60));
+        let (mut stack, rx, tx, _link) = bound_stack_with(config);
+
+        rx.borrow_mut().push_back(arp_request_from_server());
+        stack.poll(at(3));
+        assert_eq!(tx.borrow().len(), 3); // the ARP reply
+
+        stack.poll(at(32));
+        assert_eq!(tx.borrow().len(), 4);
+        let mut sent = parse_sent(&tx.borrow()[3]);
+        assert_eq!(sent.src_ip, OFFERED_IP);
+        assert_eq!(sent.dst_ip, SERVER_IP);
+        assert_eq!(sent.dst_hw, SERVER_HW);
+        assert_eq!(message_type(&mut sent), DhcpMessageType::Request);
+        let xid = transaction_id(&mut sent);
+        (stack, rx, tx, xid)
+    }
+
+    /// Poll at `t` and check that no frame went out. Returns the poll deadline.
+    fn poll_quiet(stack: &mut Stack<'_>, tx: &Sent, t: Instant) -> Instant {
+        let before = tx.borrow().len();
+        let deadline = stack.poll(t);
+        assert_eq!(tx.borrow().len(), before, "unexpected frame at {}", t);
+        deadline
+    }
+
+    /// Poll at `t` and check that exactly one frame went out: a renew or rebind
+    /// REQUEST from the leased address to `dst_ip`, with the leased address in
+    /// ciaddr and no requested-ip or server-id options. Returns its xid.
+    fn poll_renew(stack: &mut Stack<'_>, tx: &Sent, t: Instant, dst_ip: Ipv4Addr) -> u32 {
+        let before = tx.borrow().len();
+        stack.poll(t);
+        assert_eq!(tx.borrow().len(), before + 1, "expected one REQUEST at {}", t);
+        let mut sent = parse_sent(tx.borrow().last().unwrap());
+        assert_eq!(sent.src_ip, OFFERED_IP);
+        assert_eq!(sent.dst_ip, dst_ip);
+        assert_eq!(
+            sent.dst_hw,
+            if dst_ip == Ipv4Addr::BROADCAST {
+                EthernetAddress::BROADCAST
+            } else {
+                SERVER_HW
+            }
+        );
+        assert_eq!(message_type(&mut sent), DhcpMessageType::Request);
+        let packet = DhcpPacket::new_checked(&mut sent.dhcp).unwrap();
+        assert_eq!(packet.client_ip(), OFFERED_IP);
+        assert_eq!(packet.option(field::OPT_REQUESTED_IP), None);
+        assert_eq!(packet.option(field::OPT_SERVER_IDENTIFIER), None);
+        packet.transaction_id()
+    }
+
+    /// The DISCOVER tells the server the biggest reply we take, the IP MTU minus
+    /// the worst-case IPv4 and UDP headers (60 + 8), and asks for the subnet
+    /// mask, router and DNS servers.
+    #[test]
+    fn test_discover_max_message_size() {
+        let (mut stack, _rx, tx) = test_stack();
+        stack.poll(at(0));
+        assert_eq!(tx.borrow().len(), 1);
+        let mut sent = parse_sent(&tx.borrow()[0]);
+        assert_eq!(message_type(&mut sent), DhcpMessageType::Discover);
+        // The test device has a 1500-byte frame MTU, so the IP MTU is 1486.
+        let ip_mtu = stack.iface(IFACE).ip_mtu();
+        assert_eq!(ip_mtu, 1486);
+        let max_size = (ip_mtu - 60 - UDP_HEADER_LEN) as u16;
+        assert_eq!(max_size, 1418);
+        let packet = DhcpPacket::new_checked(&mut sent.dhcp).unwrap();
+        assert_eq!(
+            packet.option(field::OPT_MAX_DHCP_MESSAGE_SIZE),
+            Some(&max_size.to_be_bytes()[..])
+        );
+        assert_eq!(
+            packet.option(field::OPT_PARAMETER_REQUEST_LIST),
+            Some(&[field::OPT_SUBNET_MASK, field::OPT_ROUTER, field::OPT_DOMAIN_NAME_SERVER][..])
+        );
+        assert_eq!(packet.option(field::OPT_PARAMETER_REQUEST_LIST), Some(&[1, 3, 6][..]));
+    }
+
+    /// An OFFER answering a retransmitted DISCOVER is as good as one answering
+    /// the first.
+    #[test]
+    fn test_discover_retransmit_offer_accepted() {
+        let (mut stack, rx, tx) = test_stack();
+        stack.poll(at(0));
+        stack.poll(at(1));
+        assert_eq!(tx.borrow().len(), 1);
+        stack.poll(at(9));
+        assert_eq!(tx.borrow().len(), 1);
+        stack.poll(at(10));
+        assert_eq!(tx.borrow().len(), 2);
+        assert_discover(&tx.borrow()[1]);
+        stack.poll(at(11));
+        assert_eq!(tx.borrow().len(), 2);
+        stack.poll(at(20));
+        assert_eq!(tx.borrow().len(), 3);
+        let xid = assert_discover(&tx.borrow()[2]);
+
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Offer, xid, OFFERED_IP, &ack_options()));
+        stack.poll(at(20));
+        assert_eq!(tx.borrow().len(), 4);
+        assert_initial_request(&tx.borrow()[3], xid);
+    }
+
+    #[test]
+    fn test_request_retransmit() {
+        let (mut stack, rx, tx, xid) = requesting_stack();
+
+        // Unanswered REQUESTs are retried after 5 s, then 5 s, then 10 s: the
+        // timeout doubles every two tries. Every retry carries the same xid.
+        stack.poll(at(1));
+        assert_eq!(tx.borrow().len(), 2);
+        stack.poll(at(5));
+        assert_eq!(tx.borrow().len(), 3);
+        assert_initial_request(&tx.borrow()[2], xid);
+        stack.poll(at(6));
+        assert_eq!(tx.borrow().len(), 3);
+        stack.poll(at(10));
+        assert_eq!(tx.borrow().len(), 4);
+        assert_initial_request(&tx.borrow()[3], xid);
+        stack.poll(at(15));
+        assert_eq!(tx.borrow().len(), 4);
+        stack.poll(at(20));
+        assert_eq!(tx.borrow().len(), 5);
+        assert_initial_request(&tx.borrow()[4], xid);
+
+        // An ACK after the retransmits still binds. The 600 s lease starts now,
+        // so the next poll is due at T1, 300 s from now.
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Ack, xid, OFFERED_IP, &ack_options()));
+        assert_eq!(stack.poll(at(20)), at(20 + 300));
+        assert_eq!(tx.borrow().len(), 5);
+        let lease = stack.iface(IFACE).dhcpv4_lease().cloned().unwrap();
+        assert_eq!(lease.address, Ipv4Cidr::new(OFFERED_IP, 24));
+        assert_eq!(lease.router, Some(SERVER_IP));
+        assert_eq!(
+            ipv4_addrs(&mut stack),
+            &[IfaceAddr {
+                cidr: IpCidr::new(OFFERED_IP.into(), 24),
+                origin: AddrOrigin::Dhcpv4,
+                preferred_until: None
+            }]
+        );
+        let route = stack.routes().default_ipv4_route().unwrap();
+        assert_eq!(route.via_router, IpAddr::V4(SERVER_IP));
+        assert_eq!(route.iface, IFACE);
+        assert_eq!(stack.poll(at(21)), at(20 + 300));
+    }
+
+    #[test]
+    fn test_request_timeout() {
+        let (mut stack, rx, tx, xid) = requesting_stack();
+
+        // REQUEST retries at 5, 10, 20 and 30 s: 5 + 5 + 10 + 10.
+        for (t, count) in [(5, 3), (10, 4), (20, 5), (30, 6)] {
+            stack.poll(at(t));
+            assert_eq!(tx.borrow().len(), count, "at {} s", t);
+            assert_initial_request(tx.borrow().last().unwrap(), xid);
+        }
+
+        // The fifth REQUEST was the last. 20 s after it, at 50 s, the client gives
+        // up: the poll that notices sends nothing and asks to be polled again at
+        // once, and that poll sends a fresh DISCOVER.
+        assert_eq!(stack.poll(at(49)), at(50));
+        assert_eq!(tx.borrow().len(), 6);
+        let deadline = stack.poll(at(69));
+        assert!(deadline <= at(69), "deadline {} should be due at once", deadline);
+        assert_eq!(tx.borrow().len(), 6);
+        assert!(stack.iface(IFACE).dhcpv4_lease().is_none());
+        stack.poll(at(70));
+        assert_eq!(tx.borrow().len(), 7);
+        let new_xid = assert_discover(&tx.borrow()[6]);
+        assert!(stack.iface(IFACE).dhcpv4_lease().is_none());
+
+        // The new discovery works like the first.
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Offer, new_xid, OFFERED_IP, &ack_options()));
+        stack.poll(at(70));
+        assert_eq!(tx.borrow().len(), 8);
+        assert_initial_request(&tx.borrow()[7], new_xid);
+    }
+
+    /// With `ignore_naks`, a NAK to the initial REQUEST changes nothing: the
+    /// REQUEST is retried and an ACK still binds.
+    #[test]
+    fn test_request_nak_ignored() {
+        let mut config = DhcpConfig::default();
+        config.ignore_naks = true;
+        let (mut stack, rx, tx, xid) = requesting_stack_with(config);
+
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Nak, xid, Ipv4Addr::BROADCAST, &[]));
+        stack.poll(at(1));
+        assert_eq!(tx.borrow().len(), 2);
+        assert!(stack.iface(IFACE).dhcpv4_lease().is_none());
+
+        stack.poll(at(5));
+        assert_eq!(tx.borrow().len(), 3);
+        assert_initial_request(&tx.borrow()[2], xid);
+
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Ack, xid, OFFERED_IP, &ack_options()));
+        stack.poll(at(6));
+        assert_eq!(tx.borrow().len(), 3);
+        assert!(stack.iface(IFACE).dhcpv4_lease().is_some());
+    }
+
+    /// A NAK to a renew REQUEST drops the lease and starts discovery over.
+    #[test]
+    fn test_renew_nak() {
+        let (mut stack, rx, tx, xid) = renewing_stack_with(DhcpConfig::default());
+
+        // The server NAKs, broadcast as RFC 2131 has it.
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Nak, xid, Ipv4Addr::BROADCAST, &[]));
+        stack.poll(at(32));
+        assert!(stack.iface(IFACE).dhcpv4_lease().is_none());
+        assert!(ipv4_addrs(&mut stack).is_empty());
+        assert!(stack.routes().default_ipv4_route().is_none());
+        // Back in discovery: a DISCOVER goes out right away.
+        assert_eq!(tx.borrow().len(), 5);
+        assert_discover(&tx.borrow()[4]);
+    }
+
+    /// With `ignore_naks`, a NAK to a renew REQUEST changes nothing.
+    #[test]
+    fn test_renew_nak_ignored() {
+        let mut config = DhcpConfig::default();
+        config.ignore_naks = true;
+        let (mut stack, rx, tx, xid) = renewing_stack_with(config);
+
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Nak, xid, Ipv4Addr::BROADCAST, &[]));
+        stack.poll(at(32));
+        assert!(stack.iface(IFACE).dhcpv4_lease().is_some());
+        assert_eq!(
+            ipv4_addrs(&mut stack),
+            &[IfaceAddr {
+                cidr: IpCidr::new(OFFERED_IP.into(), 24),
+                origin: AddrOrigin::Dhcpv4,
+                preferred_until: None
+            }]
+        );
+        assert!(stack.routes().default_ipv4_route().is_some());
+        assert_eq!(tx.borrow().len(), 4);
+    }
+
+    /// An ACK with more DNS servers than the lease can hold keeps the first
+    /// `DHCP_MAX_DNS_SERVER_COUNT` of them, in order.
+    #[test]
+    fn test_ack_dns_servers_capped() {
+        let all = [
+            Ipv4Addr::new(163, 1, 74, 6),
+            Ipv4Addr::new(163, 1, 74, 7),
+            Ipv4Addr::new(163, 1, 74, 3),
+            Ipv4Addr::new(163, 1, 74, 4),
+        ];
+        let options = ack_options_with(
+            field::OPT_DOMAIN_NAME_SERVER,
+            DhcpOption {
+                kind: field::OPT_DOMAIN_NAME_SERVER,
+                data: &[
+                    0xa3, 0x01, 0x4a, 0x06, 0xa3, 0x01, 0x4a, 0x07, 0xa3, 0x01, 0x4a, 0x03, 0xa3, 0x01, 0x4a, 0x04,
+                ],
+            },
+        );
+
+        let (mut stack, rx, _tx) = test_stack();
+        stack.poll(at(0)); // DISCOVER
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Offer, XID, OFFERED_IP, &options));
+        stack.poll(at(1)); // REQUEST
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Ack, XID, OFFERED_IP, &options));
+        stack.poll(at(2));
+
+        let lease = stack.iface(IFACE).dhcpv4_lease().cloned().unwrap();
+        let want = &all[..DHCP_MAX_DNS_SERVER_COUNT.min(all.len())];
+        assert_eq!(&lease.dns_servers[..], want);
+    }
+
+    /// The lease time option is taken as is: a 598 s lease renews after 299 s
+    /// and expires after 598 s.
+    #[test]
+    fn test_ack_lease_duration() {
+        let options = ack_options_with(
+            field::OPT_IP_LEASE_TIME,
+            DhcpOption {
+                kind: field::OPT_IP_LEASE_TIME,
+                data: &[0x00, 0x00, 0x02, 0x56], // 598 s
+            },
+        );
+
+        let (mut stack, rx, tx) = test_stack();
+        // The default config puts no cap on the lease duration.
+        assert_eq!(DhcpConfig::default().max_lease_duration, None);
+        stack.poll(at(0)); // DISCOVER
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Offer, XID, OFFERED_IP, &options));
+        stack.poll(at(1)); // REQUEST
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Ack, XID, OFFERED_IP, &options));
+        stack.poll(at(2));
+        assert_eq!(tx.borrow().len(), 2);
+        assert!(stack.iface(IFACE).dhcpv4_lease().is_some());
+        // A static neighbor entry for the server, so the renew REQUEST goes
+        // straight out instead of parking on ARP. Added after the lease is
+        // applied: a new address clears the interface's neighbor cache.
+        stack
+            .neighbor_cache_mut()
+            .insert(
+                IFACE,
+                IpAddr::V4(SERVER_IP),
+                HardwareAddress::Ethernet(SERVER_HW),
+                Instant::MAX,
+            )
+            .unwrap();
+
+        // T1 is half the lease: 299 s after the ACK.
+        assert_eq!(stack.poll(at(3)), at(2 + 299));
+        assert_eq!(poll_quiet(&mut stack, &tx, at(300)), at(301));
+        poll_renew(&mut stack, &tx, at(301), SERVER_IP);
+
+        // Unanswered, the lease expires 598 s after the ACK, not a second before.
+        let mut t = 302;
+        while t < 600 {
+            stack.poll(at(t));
+            assert!(stack.iface(IFACE).dhcpv4_lease().is_some(), "lease gone at {} s", t);
+            t += 1;
+        }
+        stack.poll(at(600));
+        assert!(stack.iface(IFACE).dhcpv4_lease().is_none());
+        assert!(ipv4_addrs(&mut stack).is_empty());
+    }
+
+    /// The renew and rebind retransmission schedule of RFC 2131 §4.4.5: a
+    /// 1000 s lease bound at 0 has T1 = 500 and T2 = 875. Renew REQUESTs are
+    /// unicast to the server at T1 and then after half the time left to T2, no
+    /// less than 60 s apart, and never past T2. From T2 on the REQUESTs are
+    /// broadcast, after half the time left to expiry, again no less than 60 s
+    /// apart.
+    #[test]
+    fn test_renew_rebind_retransmit_schedule() {
+        let options = ack_options_with(
+            field::OPT_IP_LEASE_TIME,
+            DhcpOption {
+                kind: field::OPT_IP_LEASE_TIME,
+                data: &[0x00, 0x00, 0x03, 0xe8], // 1000 s
+            },
+        );
+
+        let (mut stack, rx, tx) = test_stack();
+
+        // DISCOVER, OFFER, REQUEST, ACK, all at 0: the lease is bound at 0.
+        stack.poll(at(0));
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Offer, XID, OFFERED_IP, &options));
+        stack.poll(at(0));
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Ack, XID, OFFERED_IP, &options));
+        assert_eq!(stack.poll(at(0)), at(500));
+        assert_eq!(tx.borrow().len(), 2);
+        assert!(stack.iface(IFACE).dhcpv4_lease().is_some());
+        // A static neighbor entry for the server, so the renew REQUESTs go
+        // straight out instead of parking on ARP. Added after the lease is
+        // applied: a new address clears the interface's neighbor cache.
+        stack
+            .neighbor_cache_mut()
+            .insert(
+                IFACE,
+                IpAddr::V4(SERVER_IP),
+                HardwareAddress::Ethernet(SERVER_HW),
+                Instant::MAX,
+            )
+            .unwrap();
+
+        // First renew attempt at T1.
+        assert_eq!(poll_quiet(&mut stack, &tx, ms(499_000)), ms(500_000));
+        poll_renew(&mut stack, &tx, ms(500_000), SERVER_IP);
+        // Next renew attempt half way to T2: 500 + 375 / 2.
+        assert_eq!(poll_quiet(&mut stack, &tx, ms(687_000)), ms(687_500));
+        poll_renew(&mut stack, &tx, ms(687_500), SERVER_IP);
+        // Half way again: 687.5 + 187.5 / 2.
+        assert_eq!(poll_quiet(&mut stack, &tx, ms(781_000)), ms(781_250));
+        poll_renew(&mut stack, &tx, ms(781_250), SERVER_IP);
+        // Half of the 93.75 s left is under the 60 s minimum: 60 s later.
+        assert_eq!(poll_quiet(&mut stack, &tx, ms(841_000)), ms(841_250));
+        poll_renew(&mut stack, &tx, ms(841_250), SERVER_IP);
+        // 60 s from here is past T2, so there are no more renews before T2.
+        assert_eq!(poll_quiet(&mut stack, &tx, ms(874_000)), ms(875_000));
+        assert_eq!(poll_quiet(&mut stack, &tx, ms(874_999)), ms(875_000));
+        // First rebind attempt at T2, broadcast.
+        poll_renew(&mut stack, &tx, ms(875_000), Ipv4Addr::BROADCAST);
+        // Next rebind attempt half way to expiry: 875 + 125 / 2.
+        assert_eq!(poll_quiet(&mut stack, &tx, ms(937_000)), ms(937_500));
+        poll_renew(&mut stack, &tx, ms(937_500), Ipv4Addr::BROADCAST);
+        // Half of the 62.5 s left is under the minimum: 60 s later.
+        assert_eq!(poll_quiet(&mut stack, &tx, ms(997_000)), ms(997_500));
+        let xid = poll_renew(&mut stack, &tx, ms(997_500), Ipv4Addr::BROADCAST);
+        assert!(stack.iface(IFACE).dhcpv4_lease().is_some());
+
+        // An ACK just before expiry renews the lease from now: T1 = 999 + 500.
+        rx.borrow_mut()
+            .push_back(reply(DhcpMessageType::Ack, xid, OFFERED_IP, &options));
+        assert_eq!(stack.poll(ms(999_000)), ms(999_000 + 500_000));
+        assert!(stack.iface(IFACE).dhcpv4_lease().is_some());
+        // Unicast renewals again: rebinding is over.
+        assert_eq!(poll_quiet(&mut stack, &tx, ms(1_498_999)), ms(1_499_000));
+        poll_renew(&mut stack, &tx, ms(1_499_000), SERVER_IP);
     }
 }

@@ -194,6 +194,36 @@ mod test {
         assert_eq!(packet.retrans_time(), Duration::from_millis(900));
         assert_eq!(packet.payload(), &SOURCE_LINK_LAYER_OPT[..]);
     }
+
+    #[test]
+    fn test_router_advert_construct() {
+        use crate::wire::{Ipv6Addr, NdiscOption, NdiscOptionType, RawHardwareAddress};
+        let src = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+        let dst = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
+
+        // Into a buffer full of stale bytes: every byte of the message is written.
+        let mut bytes = [0x2a; 24];
+        let mut packet = Packet::new_unchecked(&mut bytes[..]);
+        packet.set_msg_type(Message::RouterAdvert);
+        packet.set_msg_code(0);
+        packet.set_current_hop_limit(64);
+        packet.set_router_flags(RouterFlags::MANAGED);
+        packet.set_router_lifetime(Duration::from_secs(900));
+        packet.set_reachable_time(Duration::from_millis(900));
+        packet.set_retrans_time(Duration::from_millis(900));
+        {
+            let mut opt = NdiscOption::new_unchecked(packet.payload_mut());
+            opt.set_option_type(NdiscOptionType::SourceLinkLayerAddr);
+            opt.set_data_len(1);
+            opt.set_link_layer_addr(RawHardwareAddress::from_bytes(&[0x52, 0x54, 0x00, 0x12, 0x34, 0x56]));
+        }
+        packet.fill_checksum(&src, &dst);
+        assert_eq!(&bytes[..], &ROUTER_ADVERT_BYTES[..]);
+
+        // And it verifies, for the addresses it was built with.
+        let packet = Packet::new_checked(&mut bytes[..]).unwrap();
+        assert!(packet.verify_checksum(&src, &dst));
+    }
 }
 
 #[cfg(feature = "defmt")]

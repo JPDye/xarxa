@@ -1625,6 +1625,56 @@ mod test {
         assert_eq!(packet.option(field::OPT_NTP_SERVERS), Some(&[192, 168, 1, 2][..]));
     }
 
+    /// Several DNS servers go out in one option, back to back and in the
+    /// configured order, in both the OFFER and the ACK.
+    #[test]
+    fn test_offer_multiple_dns_servers() {
+        let servers = [
+            Ipv4Addr::new(163, 1, 74, 6),
+            Ipv4Addr::new(163, 1, 74, 7),
+            Ipv4Addr::new(163, 1, 74, 3),
+        ];
+        let (mut stack, rx, tx) = test_stack();
+        let mut config = test_config();
+        config.dns_servers.clear();
+        // As many as the config holds, three unless the knob is smaller.
+        let count = DHCP_MAX_DNS_SERVER_COUNT.min(servers.len());
+        for server in &servers[..count] {
+            config.dns_servers.push(*server).unwrap();
+        }
+        stack.iface(IFACE).set_dhcpv4_server(Some(config)).unwrap();
+        let want: Vec<u8> = servers[..count].iter().flat_map(|s| s.octets()).collect();
+        if count == 3 {
+            assert_eq!(
+                want,
+                [0xa3, 0x01, 0x4a, 0x06, 0xa3, 0x01, 0x4a, 0x07, 0xa3, 0x01, 0x4a, 0x03]
+            );
+        }
+
+        send(&mut stack, &rx, Msg::new(DhcpMessageType::Discover, CLIENT_HW), 0);
+        let mut sent = last_sent(&tx);
+        assert_eq!(message_type(&mut sent), DhcpMessageType::Offer);
+        {
+            let packet = DhcpPacket::new_checked(&mut sent.dhcp).unwrap();
+            assert_eq!(packet.option(field::OPT_DOMAIN_NAME_SERVER), Some(&want[..]));
+        }
+
+        send(
+            &mut stack,
+            &rx,
+            Msg::new(DhcpMessageType::Request, CLIENT_HW)
+                .server_id(SERVER_IP)
+                .requested_ip(POOL_START),
+            1,
+        );
+        let mut sent = last_sent(&tx);
+        assert_eq!(message_type(&mut sent), DhcpMessageType::Ack);
+        {
+            let packet = DhcpPacket::new_checked(&mut sent.dhcp).unwrap();
+            assert_eq!(packet.option(field::OPT_DOMAIN_NAME_SERVER), Some(&want[..]));
+        }
+    }
+
     #[test]
     fn test_relayed_request_ignored() {
         let (mut stack, rx, tx) = test_stack();

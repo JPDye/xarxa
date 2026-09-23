@@ -3935,18 +3935,26 @@ pub(crate) mod test {
         )
     }
 
+    /// The error quotes the whole offending packet, or just its header when it
+    /// has no payload.
     #[test]
     fn test_icmpv4_proto_unreachable() {
-        let (mut stack, rx, tx) = test_stack(Medium::Ip);
-        let packet = ipv4_packet(REMOTE_V4, OUR_V4, IpProtocol(99), b"hello");
-        inject(&mut stack, &rx, packet.clone());
+        for payload in [&b"hello"[..], b""] {
+            let (mut stack, rx, tx) = test_stack(Medium::Ip);
+            let packet = ipv4_packet(REMOTE_V4, OUR_V4, IpProtocol(99), payload);
+            inject(&mut stack, &rx, packet.clone());
 
-        let tx = tx.borrow();
-        assert_eq!(tx.len(), 1);
-        let (msg_type, msg_code, quote) = parse_icmpv4_reply(&tx[0], OUR_V4, REMOTE_V4);
-        assert_eq!(msg_type, Icmpv4Message::DstUnreachable);
-        assert_eq!(msg_code, Icmpv4DstUnreachable::ProtoUnreachable.0);
-        assert_eq!(quote, packet);
+            let tx = tx.borrow();
+            assert_eq!(tx.len(), 1);
+            let mut bytes = tx[0].clone();
+            let ip = Ipv4Packet::new_checked(&mut bytes[..]).unwrap();
+            assert_eq!(ip.hop_limit(), 64);
+            assert_eq!(ip.total_len() as usize, IPV4_HEADER_LEN + 8 + packet.len());
+            let (msg_type, msg_code, quote) = parse_icmpv4_reply(&tx[0], OUR_V4, REMOTE_V4);
+            assert_eq!(msg_type, Icmpv4Message::DstUnreachable);
+            assert_eq!(msg_code, Icmpv4DstUnreachable::ProtoUnreachable.0);
+            assert_eq!(quote, packet);
+        }
     }
 
     /// A stack with two IP-medium interfaces: the first owns [`OUR_V4`]/24,
@@ -6107,6 +6115,464 @@ pub(crate) mod test {
 
     const OTHER_HW: EthernetAddress = EthernetAddress([0x02, 0, 0, 0, 0, 0x02]);
 
+    /// An IPv4 packet whose version nibble says otherwise is dropped, even when
+    /// the frame's ethertype says IPv4 and the packet would otherwise be answered.
+    #[test]
+    fn test_ipv4_bad_version_dropped() {
+        let (mut stack, rx, tx) = test_stack(Medium::Ethernet);
+        let request = icmpv4_echo(Icmpv4Message::EchoRequest, 0x1234, 7, b"hello");
+        let mut packet = ipv4_packet(REMOTE_V4, OUR_V4, IpProtocol::Icmp, &request);
+
+        // The same packet with the right version is answered, so the setup is sound.
+        inject(
+            &mut stack,
+            &rx,
+            eth_frame_from(OTHER_HW, OUR_HW, EthernetProtocol::Ipv4, &packet),
+        );
+        assert_eq!(tx.borrow().len(), 1);
+        tx.borrow_mut().clear();
+
+        Ipv4Packet::new_unchecked(&mut packet[..]).set_version(6);
+        Ipv4Packet::new_unchecked(&mut packet[..]).fill_checksum();
+        inject(
+            &mut stack,
+            &rx,
+            eth_frame_from(OTHER_HW, OUR_HW, EthernetProtocol::Ipv4, &packet),
+        );
+        assert!(tx.borrow().is_empty());
+    }
+
+    /// Same for IPv6.
+    #[test]
+    fn test_ipv6_bad_version_dropped() {
+        let (mut stack, rx, tx) = test_stack(Medium::Ethernet);
+        let request = icmpv6_echo(Icmpv6Message::EchoRequest, 0x1234, 7, b"hello", REMOTE_V6, OUR_V6);
+        let mut packet = ipv6_packet(REMOTE_V6, OUR_V6, IpProtocol::Icmpv6, &request);
+
+        inject(
+            &mut stack,
+            &rx,
+            eth_frame_from(OTHER_HW, OUR_HW, EthernetProtocol::Ipv6, &packet),
+        );
+        assert_eq!(tx.borrow().len(), 1);
+        tx.borrow_mut().clear();
+
+        Ipv6Packet::new_unchecked(&mut packet[..]).set_version(4);
+        inject(
+            &mut stack,
+            &rx,
+            eth_frame_from(OTHER_HW, OUR_HW, EthernetProtocol::Ipv6, &packet),
+        );
+        assert!(tx.borrow().is_empty());
+    }
+
+    /// An ICMPv6 error quotes as much of the offending packet as fits the IPv6
+    /// minimum MTU, so the error itself is never fragmented.
+    #[test]
+    fn test_icmpv6_error_quote_truncated() {
+        let (mut stack, rx, tx) = test_stack(Medium::Ip);
+
+        // A port unreachable for a datagram bigger than the cap: the error is
+        // exactly IPV6_MIN_MTU long.
+        let datagram = udp_datagram(REMOTE_V6.into(), 67, OUR_V6.into(), 68, &[0x2a; 1192]);
+        let packet = ipv6_packet(REMOTE_V6, OUR_V6, IpProtocol::Udp, &datagram);
+        inject(&mut stack, &rx, packet.clone());
+        {
+            let tx = tx.borrow();
+            assert_eq!(tx.len(), 1);
+            assert_eq!(tx[0].len(), IPV6_MIN_MTU);
+            let (msg_type, msg_code, _, quote) = parse_icmpv6_reply(&tx[0], OUR_V6, REMOTE_V6);
+            assert_eq!(msg_type, Icmpv6Message::DstUnreachable);
+            assert_eq!(msg_code, Icmpv6DstUnreachable::PortUnreachable.0);
+            assert_eq!(quote.len(), IPV6_MIN_MTU - IPV6_HEADER_LEN - 8);
+            assert_eq!(quote, packet[..quote.len()]);
+        }
+        tx.borrow_mut().clear();
+
+        // Same cap for a parameter problem.
+        let packet = ipv6_packet(REMOTE_V6, OUR_V6, IpProtocol(99), &[0xab; 1400]);
+        inject(&mut stack, &rx, packet.clone());
+        let tx = tx.borrow();
+        assert_eq!(tx.len(), 1);
+        assert_eq!(tx[0].len(), IPV6_MIN_MTU);
+        let (msg_type, _, _, quote) = parse_icmpv6_reply(&tx[0], OUR_V6, REMOTE_V6);
+        assert_eq!(msg_type, Icmpv6Message::ParamProblem);
+        assert_eq!(quote, packet[..quote.len()]);
+    }
+
+    /// No ICMP error is ever sent about a packet addressed to the limited
+    /// broadcast address (RFC 1122 §3.2.2), whatever provoked it.
+    #[test]
+    fn test_icmpv4_no_error_to_limited_broadcast() {
+        for medium in [Medium::Ip, Medium::Ethernet] {
+            let (mut stack, rx, tx) = test_stack(medium);
+            let wrap = |packet: &[u8]| match medium {
+                Medium::Ip => packet.to_vec(),
+                Medium::Ethernet => {
+                    eth_frame_from(OTHER_HW, EthernetAddress::BROADCAST, EthernetProtocol::Ipv4, packet)
+                }
+                #[cfg(feature = "medium-ieee802154")]
+                Medium::Ieee802154 => unreachable!(),
+            };
+
+            // Unknown protocol: no protocol unreachable.
+            let packet = ipv4_packet(REMOTE_V4, Ipv4Addr::BROADCAST, IpProtocol(12), b"");
+            inject(&mut stack, &rx, wrap(&packet));
+            assert!(tx.borrow().is_empty(), "{medium:?}");
+
+            // UDP to a port nobody listens on: no port unreachable.
+            let datagram = udp_datagram(REMOTE_V4.into(), 67, Ipv4Addr::BROADCAST.into(), 68, b"hello");
+            let packet = ipv4_packet(REMOTE_V4, Ipv4Addr::BROADCAST, IpProtocol::Udp, &datagram);
+            inject(&mut stack, &rx, wrap(&packet));
+            assert!(tx.borrow().is_empty(), "{medium:?}");
+
+            // The same datagram to our unicast address is answered, so the
+            // suppression above is what kept the wire quiet.
+            let datagram = udp_datagram(REMOTE_V4.into(), 67, OUR_V4.into(), 68, b"hello");
+            let packet = ipv4_packet(REMOTE_V4, OUR_V4, IpProtocol::Udp, &datagram);
+            inject(&mut stack, &rx, wrap(&packet));
+            if medium == Medium::Ip {
+                assert_eq!(tx.borrow().len(), 1, "{medium:?}");
+            } else {
+                // On Ethernet the reply parks on the ARP resolution of the sender;
+                // the ARP request is what goes out.
+                assert_eq!(tx.borrow().len(), 1, "{medium:?}");
+                assert_eq!(ethertype_of(&tx.borrow()[0]), EthernetProtocol::Arp);
+            }
+        }
+    }
+
+    /// Subnet broadcast detection follows the interface's own prefixes.
+    #[test]
+    fn test_is_broadcast_v4() {
+        let (mut stack, _rx, _tx) = test_stack(Medium::Ip);
+        let handle = IfaceHandle::new(0);
+        let a = |a: u8, b: u8, c: u8, d: u8| Ipv4Addr::new(a, b, c, d);
+
+        stack
+            .iface(handle)
+            .set_ip_addrs([IpCidr::new(a(192, 168, 1, 23).into(), 24)])
+            .unwrap();
+        let iface = stack.ifaces.get(0);
+        assert!(iface.is_broadcast_v4(a(255, 255, 255, 255)));
+        assert!(!iface.is_broadcast_v4(a(255, 255, 255, 254)));
+        assert!(iface.is_broadcast_v4(a(192, 168, 1, 255)));
+        assert!(!iface.is_broadcast_v4(a(192, 168, 1, 254)));
+
+        stack
+            .iface(handle)
+            .set_ip_addrs([IpCidr::new(a(192, 168, 23, 24).into(), 16)])
+            .unwrap();
+        let iface = stack.ifaces.get(0);
+        assert!(iface.is_broadcast_v4(a(255, 255, 255, 255)));
+        assert!(!iface.is_broadcast_v4(a(255, 255, 255, 254)));
+        assert!(!iface.is_broadcast_v4(a(192, 168, 23, 255)));
+        assert!(!iface.is_broadcast_v4(a(192, 168, 23, 254)));
+        assert!(iface.is_broadcast_v4(a(192, 168, 255, 255)));
+        assert!(!iface.is_broadcast_v4(a(192, 168, 255, 254)));
+
+        stack
+            .iface(handle)
+            .set_ip_addrs([IpCidr::new(a(192, 168, 23, 24).into(), 8)])
+            .unwrap();
+        let iface = stack.ifaces.get(0);
+        assert!(iface.is_broadcast_v4(a(255, 255, 255, 255)));
+        assert!(!iface.is_broadcast_v4(a(255, 255, 255, 254)));
+        assert!(!iface.is_broadcast_v4(a(192, 23, 1, 255)));
+        assert!(!iface.is_broadcast_v4(a(192, 23, 1, 254)));
+        assert!(iface.is_broadcast_v4(a(192, 255, 255, 255)));
+        assert!(!iface.is_broadcast_v4(a(192, 255, 255, 254)));
+    }
+
+    /// An echo request to the broadcast address is answered from our unicast
+    /// address, to the sender.
+    #[test]
+    fn test_icmpv4_echo_reply_to_broadcast() {
+        for (medium, dst_addr) in [
+            (Medium::Ip, Ipv4Addr::BROADCAST),
+            (Medium::Ip, Ipv4Addr::new(192, 168, 1, 255)),
+            (Medium::Ethernet, Ipv4Addr::BROADCAST),
+        ] {
+            let (mut stack, rx, tx) = test_stack(medium);
+            let request = icmpv4_echo(Icmpv4Message::EchoRequest, 0x1234, 0xabcd, &[0xaa, 0x00, 0x00, 0xff]);
+            let packet = ipv4_packet(REMOTE_V4, dst_addr, IpProtocol::Icmp, &request);
+            match medium {
+                Medium::Ip => inject(&mut stack, &rx, packet),
+                Medium::Ethernet => {
+                    // Resolve the sender first, so the reply doesn't park on ARP.
+                    inject(&mut stack, &rx, arp_request_from(OTHER_HW, REMOTE_V4));
+                    tx.borrow_mut().clear();
+                    inject(
+                        &mut stack,
+                        &rx,
+                        eth_frame_from(OTHER_HW, EthernetAddress::BROADCAST, EthernetProtocol::Ipv4, &packet),
+                    );
+                }
+                #[cfg(feature = "medium-ieee802154")]
+                Medium::Ieee802154 => unreachable!(),
+            }
+
+            let tx = tx.borrow();
+            assert_eq!(tx.len(), 1, "{medium:?} {dst_addr}");
+            let frame = match medium {
+                Medium::Ip => &tx[0][..],
+                Medium::Ethernet => &tx[0][ETHERNET_HEADER_LEN..],
+                #[cfg(feature = "medium-ieee802154")]
+                Medium::Ieee802154 => unreachable!(),
+            };
+            let (msg_type, msg_code, data) = parse_icmpv4_reply(frame, OUR_V4, REMOTE_V4);
+            assert_eq!(msg_type, Icmpv4Message::EchoReply);
+            assert_eq!(msg_code, 0);
+            assert_eq!(data, [0xaa, 0x00, 0x00, 0xff]);
+            assert_eq!(
+                frame[IPV4_HEADER_LEN..],
+                icmpv4_echo(Icmpv4Message::EchoReply, 0x1234, 0xabcd, &[0xaa, 0x00, 0x00, 0xff])[..]
+            );
+        }
+    }
+
+    /// An ARP request for our address is answered with a reply naming both
+    /// sides, and the requester's mapping is cached.
+    #[test]
+    fn test_arp_request_reply_fields() {
+        let (mut stack, rx, tx) = test_stack(Medium::Ethernet);
+        inject(&mut stack, &rx, arp_request_from(OTHER_HW, REMOTE_V4));
+        {
+            let tx = tx.borrow();
+            assert_eq!(tx.len(), 1);
+            let mut frame = tx[0].clone();
+            let eth = EthernetFrame::new_checked(&mut frame[..]).unwrap();
+            assert_eq!(eth.dst_addr(), OTHER_HW);
+            assert_eq!(eth.src_addr(), OUR_HW);
+            assert_eq!(eth.ethertype(), EthernetProtocol::Arp);
+            let arp = ArpPacket::new_checked(&mut frame[ETHERNET_HEADER_LEN..]).unwrap();
+            assert_eq!(arp.hardware_type(), ArpHardware::Ethernet);
+            assert_eq!(arp.protocol_type(), EthernetProtocol::Ipv4);
+            assert_eq!(arp.hardware_len(), 6);
+            assert_eq!(arp.protocol_len(), 4);
+            assert_eq!(arp.operation(), ArpOperation::Reply);
+            assert_eq!(arp.source_hardware_addr(), OUR_HW.as_bytes());
+            assert_eq!(arp.source_protocol_addr(), &OUR_V4.octets()[..]);
+            assert_eq!(arp.target_hardware_addr(), OTHER_HW.as_bytes());
+            assert_eq!(arp.target_protocol_addr(), &REMOTE_V4.octets()[..]);
+        }
+        tx.borrow_mut().clear();
+
+        // The requester is cached: a datagram to it goes straight out.
+        let udp = stack.add_udp_socket().unwrap();
+        stack.udp_socket(udp).bind(5555, ListenSocketAddr::UNSPECIFIED).unwrap();
+        stack.udp_socket(udp).send_slice(b"hi", (REMOTE_V4, 1000)).unwrap();
+        let tx = tx.borrow();
+        assert_eq!(tx.len(), 1);
+        assert_eq!(ethertype_of(&tx[0]), EthernetProtocol::Ipv4);
+        let mut frame = tx[0].clone();
+        assert_eq!(EthernetFrame::new_unchecked(&mut frame[..]).dst_addr(), OTHER_HW);
+    }
+
+    /// An ARP request for an address that isn't ours is neither answered nor
+    /// used to fill the cache.
+    #[test]
+    fn test_arp_request_for_other_address_ignored() {
+        let (mut stack, rx, tx) = test_stack(Medium::Ethernet);
+        let mut request = arp_request_from(OTHER_HW, REMOTE_V4);
+        ArpPacket::new_unchecked(&mut request[ETHERNET_HEADER_LEN..])
+            .set_target_protocol_addr(&Ipv4Addr::new(192, 168, 1, 3).octets());
+        inject(&mut stack, &rx, request);
+        assert!(tx.borrow().is_empty());
+
+        // Not cached: a datagram to the requester has to resolve it first.
+        let udp = stack.add_udp_socket().unwrap();
+        stack.udp_socket(udp).bind(5555, ListenSocketAddr::UNSPECIFIED).unwrap();
+        stack.udp_socket(udp).send_slice(b"hi", (REMOTE_V4, 1000)).unwrap();
+        let tx = tx.borrow();
+        assert_eq!(tx.len(), 1);
+        assert_eq!(ethertype_of(&tx[0]), EthernetProtocol::Arp);
+        let mut frame = tx[0].clone();
+        assert_eq!(
+            ArpPacket::new_unchecked(&mut frame[ETHERNET_HEADER_LEN..]).operation(),
+            ArpOperation::Request
+        );
+    }
+
+    /// A raw socket watching UDP gets a copy of each datagram, and the UDP socket
+    /// the datagram is for still receives it. Nothing is sent back.
+    #[test]
+    fn test_raw_socket_with_udp_socket() {
+        let (mut stack, rx, tx) = test_stack(Medium::Ip);
+        let raw = stack.add_raw_socket().unwrap();
+        stack
+            .raw_socket(raw)
+            .bind(RawMode::Ip {
+                version: Some(IpVersion::V4),
+                protocol: Some(IpProtocol::Udp),
+            })
+            .unwrap();
+        let udp = stack.add_udp_socket().unwrap();
+        stack.udp_socket(udp).bind(68, ListenSocketAddr::UNSPECIFIED).unwrap();
+
+        let datagram = udp_datagram(REMOTE_V4.into(), 67, OUR_V4.into(), 68, b"hello");
+        let packet = ipv4_packet(REMOTE_V4, OUR_V4, IpProtocol::Udp, &datagram);
+        inject(&mut stack, &rx, packet.clone());
+
+        assert!(tx.borrow().is_empty());
+        {
+            let mut socket = stack.udp_socket(udp);
+            let recv = socket.recv().unwrap();
+            assert_eq!(&*recv, b"hello");
+            assert_eq!(recv.meta().remote_addr, SocketAddr::new(REMOTE_V4.into(), 67));
+            assert_eq!(recv.meta().local_addr, Some(OUR_V4.into()));
+        }
+        assert!(!stack.udp_socket(udp).can_recv());
+        let copy = stack.raw_socket(raw).recv().unwrap();
+        assert_eq!(&*copy, &packet[..]);
+    }
+
+    /// IPv4 source selection: the address on the destination's subnet, else the
+    /// first address, else nothing.
+    #[test]
+    fn test_get_source_address_ipv4() {
+        let (mut stack, _rx, _tx) = test_stack(Medium::Ip);
+        let handle = IfaceHandle::new(0);
+        let a = |a: u8, b: u8, c: u8, d: u8| Ipv4Addr::new(a, b, c, d);
+        stack
+            .iface(handle)
+            .set_ip_addrs([
+                IpCidr::new(a(172, 18, 1, 2).into(), 24),
+                IpCidr::new(a(172, 24, 24, 14).into(), 24),
+            ])
+            .unwrap();
+        let iface = stack.ifaces.get(0);
+        assert_eq!(
+            iface.get_source_address_ipv4(&a(172, 18, 1, 254)),
+            Some(a(172, 18, 1, 2))
+        );
+        assert_eq!(
+            iface.get_source_address_ipv4(&a(172, 24, 24, 12)),
+            Some(a(172, 24, 24, 14))
+        );
+        assert_eq!(
+            iface.get_source_address_ipv4(&a(172, 24, 23, 254)),
+            Some(a(172, 18, 1, 2))
+        );
+
+        // The same decision through a connected bind.
+        let udp = stack.add_udp_socket().unwrap();
+        stack.udp_socket(udp).bind(0, (a(172, 24, 24, 12), 53)).unwrap();
+        assert_eq!(stack.udp_socket(udp).local_addr().addr, Some(a(172, 24, 24, 14).into()));
+
+        // No addresses at all: nothing to pick.
+        stack.iface(handle).set_ip_addrs(Vec::<IpCidr>::new()).unwrap();
+        let iface = stack.ifaces.get(0);
+        for dst in [a(172, 18, 1, 254), a(172, 24, 24, 12), a(172, 24, 23, 254)] {
+            assert_eq!(iface.get_source_address_ipv4(&dst), None);
+        }
+    }
+
+    /// IPv6 source selection (RFC 6724): scope first, then the longest prefix,
+    /// then the first address; the loopback address for itself and for an
+    /// interface with no addresses.
+    #[test]
+    fn test_get_source_address_ipv6() {
+        let (mut stack, _rx, _tx) = test_stack(Medium::Ip);
+        let handle = IfaceHandle::new(0);
+        let ll = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+        let ula_0 = Ipv6Addr::new(0xfd00, 0, 0, 0x201, 1, 1, 1, 2);
+        let ula_1 = Ipv6Addr::new(0xfd01, 0, 0, 0x201, 1, 1, 1, 2);
+        let gua = Ipv6Addr::new(0x2001, 0xdb8, 3, 0, 0, 0, 0, 1);
+        stack
+            .iface(handle)
+            .set_ip_addrs([
+                IpCidr::new(ll.into(), 64),
+                IpCidr::new(ula_0.into(), 64),
+                IpCidr::new(ula_1.into(), 64),
+                IpCidr::new(gua.into(), 64),
+            ])
+            .unwrap();
+        let iface = stack.ifaces.get(0);
+        let pick = |dst: Ipv6Addr| iface.get_source_address_ipv6(&dst, Instant::ZERO);
+        assert_eq!(pick(Ipv6Addr::LOCALHOST), Ipv6Addr::LOCALHOST);
+        assert_eq!(pick(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x42)), ll);
+        assert_eq!(pick(Ipv6Addr::new(0xfd00, 0, 0, 0x201, 1, 1, 1, 1)), ula_0);
+        assert_eq!(pick(Ipv6Addr::new(0xfd01, 0, 0, 0x201, 1, 1, 1, 1)), ula_1);
+        assert_eq!(pick(Ipv6Addr::new(0xfd02, 0, 0, 0x201, 1, 1, 1, 1)), ula_0);
+        assert_eq!(pick(Ipv6Addr::new(0xfd01, 0, 0, 0x201, 1, 1, 1, 3)), ula_1);
+        assert_eq!(pick(IPV6_LINK_LOCAL_ALL_NODES), ll);
+        assert_eq!(pick(Ipv6Addr::new(0x2001, 0xdb8, 3, 0, 0, 0, 0, 2)), gua);
+        assert_eq!(pick(Ipv6Addr::new(0x2001, 0xdb9, 3, 0, 0, 0, 0, 2)), gua);
+
+        // Only a link-local address: it serves every destination.
+        stack.iface(handle).set_ip_addrs([IpCidr::new(ll.into(), 64)]).unwrap();
+        let iface = stack.ifaces.get(0);
+        let pick = |dst: Ipv6Addr| iface.get_source_address_ipv6(&dst, Instant::ZERO);
+        assert_eq!(pick(Ipv6Addr::LOCALHOST), Ipv6Addr::LOCALHOST);
+        for dst in [
+            Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x42),
+            Ipv6Addr::new(0xfd00, 0, 0, 0x201, 1, 1, 1, 1),
+            Ipv6Addr::new(0xfd01, 0, 0, 0x201, 1, 1, 1, 1),
+            Ipv6Addr::new(0xfd02, 0, 0, 0x201, 1, 1, 1, 1),
+            IPV6_LINK_LOCAL_ALL_NODES,
+            Ipv6Addr::new(0x2001, 0xdb8, 3, 0, 0, 0, 0, 2),
+            Ipv6Addr::new(0x2001, 0xdb9, 3, 0, 0, 0, 0, 2),
+        ] {
+            assert_eq!(pick(dst), ll, "{dst}");
+        }
+
+        // No addresses: the loopback address is the only candidate.
+        stack.iface(handle).set_ip_addrs(Vec::<IpCidr>::new()).unwrap();
+        let iface = stack.ifaces.get(0);
+        let pick = |dst: Ipv6Addr| iface.get_source_address_ipv6(&dst, Instant::ZERO);
+        for dst in [
+            Ipv6Addr::LOCALHOST,
+            Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0x42),
+            Ipv6Addr::new(0xfd00, 0, 0, 0x201, 1, 1, 1, 1),
+            IPV6_LINK_LOCAL_ALL_NODES,
+            Ipv6Addr::new(0x2001, 0xdb8, 3, 0, 0, 0, 0, 2),
+        ] {
+            assert_eq!(pick(dst), Ipv6Addr::LOCALHOST, "{dst}");
+        }
+    }
+
+    /// An IPv6 packet with a multicast source is dropped without a word.
+    #[test]
+    fn test_ipv6_multicast_source_dropped() {
+        let (mut stack, rx, tx) = test_stack(Medium::Ip);
+        let src = Ipv6Addr::new(0xff00, 0, 0, 0, 0, 0, 0, 1);
+        // An unknown next header would otherwise draw a parameter problem.
+        let packet = ipv6_packet(src, OUR_V6, IpProtocol(12), b"");
+        inject(&mut stack, &rx, packet);
+        assert!(tx.borrow().is_empty());
+        // And an echo request would draw a reply.
+        let request = icmpv6_echo(Icmpv6Message::EchoRequest, 1, 1, b"hi", src, OUR_V6);
+        inject(&mut stack, &rx, ipv6_packet(src, OUR_V6, IpProtocol::Icmpv6, &request));
+        assert!(tx.borrow().is_empty());
+    }
+
+    /// An incoming echo reply is not answered, and a raw socket can observe it.
+    #[test]
+    fn test_icmp_echo_reply_as_input() {
+        let (mut stack, rx, tx) = test_stack(Medium::Ip);
+        let raw = stack.add_raw_socket().unwrap();
+        stack
+            .raw_socket(raw)
+            .bind(RawMode::Ip {
+                version: None,
+                protocol: None,
+            })
+            .unwrap();
+
+        let reply = icmpv6_echo(Icmpv6Message::EchoReply, 0, 0, b"Lorem Ipsum", REMOTE_V6, OUR_V6);
+        let v6 = ipv6_packet(REMOTE_V6, OUR_V6, IpProtocol::Icmpv6, &reply);
+        inject(&mut stack, &rx, v6.clone());
+        assert!(tx.borrow().is_empty());
+        assert_eq!(&*stack.raw_socket(raw).recv().unwrap(), &v6[..]);
+
+        let reply = icmpv4_echo(Icmpv4Message::EchoReply, 0, 0, b"Lorem Ipsum");
+        let v4 = ipv4_packet(REMOTE_V4, OUR_V4, IpProtocol::Icmp, &reply);
+        inject(&mut stack, &rx, v4.clone());
+        assert!(tx.borrow().is_empty());
+        assert_eq!(&*stack.raw_socket(raw).recv().unwrap(), &v4[..]);
+    }
+
     /// A neighbor advertisement from `src_addr` to `dst_addr` about `target`,
     /// with the given flags and, if `lladdr` is set, a target link-layer option.
     fn neighbor_advert(
@@ -6463,5 +6929,191 @@ pub(crate) mod test {
 
         // The solicitation's source link-layer option was cached.
         assert_eq!(send_udp_v6_and_classify(&mut stack, &tx, remote_ll), Some(OTHER_HW));
+    }
+
+    /// `has_solicited_node` matches the solicited-node group of each assigned
+    /// address, and only those.
+    #[test]
+    fn test_has_solicited_node() {
+        let (mut stack, _rx, _tx) = test_stack(Medium::Ip);
+        stack
+            .iface(IfaceHandle::new(0))
+            .set_ip_addrs([
+                IpCidr::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 1, 2, 0, 2).into(), 64),
+                IpCidr::new(Ipv6Addr::new(0xfe80, 0, 0, 0, 3, 4, 0, 0xffff).into(), 64),
+            ])
+            .unwrap();
+        let iface = stack.ifaces.get(0);
+        assert!(iface.has_solicited_node(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 1, 0xff00, 0x0002)));
+        assert!(iface.has_solicited_node(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 1, 0xff00, 0xffff)));
+        assert!(!iface.has_solicited_node(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 1, 0xff00, 0x0003)));
+        // Not a solicited-node address at all, even with matching low bits.
+        assert!(!iface.has_solicited_node(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0x0002)));
+    }
+
+    /// A datagram to the broadcast / all-nodes address is delivered to a socket
+    /// bound to its port, with the broadcast address as the local address.
+    #[test]
+    fn test_udp_broadcast_delivery() {
+        for medium in [Medium::Ip, Medium::Ethernet] {
+            let (mut stack, rx, tx) = test_stack(medium);
+            let udp = stack.add_udp_socket().unwrap();
+            stack.udp_socket(udp).bind(68, ListenSocketAddr::UNSPECIFIED).unwrap();
+            let wrap = |ethertype: EthernetProtocol, dst_hw: EthernetAddress, packet: &[u8]| match medium {
+                Medium::Ip => packet.to_vec(),
+                Medium::Ethernet => eth_frame_from(OTHER_HW, dst_hw, ethertype, packet),
+                #[cfg(feature = "medium-ieee802154")]
+                Medium::Ieee802154 => unreachable!(),
+            };
+
+            let datagram = udp_datagram(REMOTE_V4.into(), 67, Ipv4Addr::BROADCAST.into(), 68, b"abcdef");
+            let packet = ipv4_packet(REMOTE_V4, Ipv4Addr::BROADCAST, IpProtocol::Udp, &datagram);
+            inject(
+                &mut stack,
+                &rx,
+                wrap(EthernetProtocol::Ipv4, EthernetAddress::BROADCAST, &packet),
+            );
+            {
+                let mut socket = stack.udp_socket(udp);
+                let recv = socket.recv().unwrap();
+                assert_eq!(&*recv, b"abcdef");
+                assert_eq!(recv.meta().remote_addr, SocketAddr::new(REMOTE_V4.into(), 67));
+                assert_eq!(recv.meta().local_addr, Some(Ipv4Addr::BROADCAST.into()));
+            }
+
+            let datagram = udp_datagram(REMOTE_V6.into(), 67, IPV6_LINK_LOCAL_ALL_NODES.into(), 68, b"abcdef");
+            let packet = ipv6_packet(REMOTE_V6, IPV6_LINK_LOCAL_ALL_NODES, IpProtocol::Udp, &datagram);
+            inject(
+                &mut stack,
+                &rx,
+                wrap(
+                    EthernetProtocol::Ipv6,
+                    EthernetAddress([0x33, 0x33, 0x00, 0x00, 0x00, 0x01]),
+                    &packet,
+                ),
+            );
+            {
+                let mut socket = stack.udp_socket(udp);
+                let recv = socket.recv().unwrap();
+                assert_eq!(&*recv, b"abcdef");
+                assert_eq!(recv.meta().remote_addr, SocketAddr::new(REMOTE_V6.into(), 67));
+                assert_eq!(recv.meta().local_addr, Some(IPV6_LINK_LOCAL_ALL_NODES.into()));
+            }
+            assert!(tx.borrow().is_empty(), "{medium:?}");
+        }
+    }
+
+    /// A TCP segment (header only) with the given flags, checksummed for `src`/`dst`.
+    #[cfg(feature = "tcp-listener")]
+    fn tcp_segment(src: IpAddr, src_port: u16, dst: IpAddr, dst_port: u16, syn: bool) -> Vec<u8> {
+        let mut segment = vec![0u8; TCP_HEADER_LEN];
+        {
+            let mut tcp = TcpPacket::new_unchecked(&mut segment[..]);
+            tcp.set_src_port(src_port);
+            tcp.set_dst_port(dst_port);
+            tcp.set_seq_number(TcpSeqNumber(0));
+            tcp.set_ack_number(TcpSeqNumber(0));
+            tcp.set_header_len(TCP_HEADER_LEN as u8);
+            tcp.set_syn(syn);
+            tcp.set_window_len(1024);
+            tcp.fill_checksum(&src, &dst);
+        }
+        segment
+    }
+
+    /// TCP segments to or from the unspecified address are dropped: a listener
+    /// records nothing and no RST goes out (RFC 1122 §3.2.1.3).
+    #[test]
+    #[cfg(feature = "tcp-listener")]
+    fn test_tcp_unspecified_address_dropped() {
+        let (mut stack, rx, tx) = test_stack(Medium::Ip);
+        let listener = stack.add_tcp_listener().unwrap();
+        stack.tcp_listener(listener).listen(1234).unwrap();
+
+        // A SYN from 0.0.0.0 to the listener's port.
+        let segment = tcp_segment(Ipv4Addr::UNSPECIFIED.into(), 65000, OUR_V4.into(), 1234, true);
+        inject(
+            &mut stack,
+            &rx,
+            ipv4_packet(Ipv4Addr::UNSPECIFIED, OUR_V4, IpProtocol::Tcp, &segment),
+        );
+        assert!(tx.borrow().is_empty());
+        assert!(!stack.tcp_listener(listener).can_accept());
+        assert!(stack.tcp_listener(listener).is_open());
+
+        // A SYN to :: for a closed port: no RST either.
+        let segment = tcp_segment(REMOTE_V6.into(), 65000, Ipv6Addr::UNSPECIFIED.into(), 80, true);
+        inject(
+            &mut stack,
+            &rx,
+            ipv6_packet(REMOTE_V6, Ipv6Addr::UNSPECIFIED, IpProtocol::Tcp, &segment),
+        );
+        assert!(tx.borrow().is_empty());
+
+        // The same SYN from a real address is recorded, so the drop above is
+        // what kept the queue empty.
+        let segment = tcp_segment(REMOTE_V4.into(), 65000, OUR_V4.into(), 1234, true);
+        inject(
+            &mut stack,
+            &rx,
+            ipv4_packet(REMOTE_V4, OUR_V4, IpProtocol::Tcp, &segment),
+        );
+        assert!(stack.tcp_listener(listener).can_accept());
+    }
+
+    /// Link-layer padding behind an IP packet is stripped before a raw socket
+    /// sees it, and a packet shorter than its own length field is dropped.
+    #[test]
+    fn test_raw_socket_recv_padded_frame() {
+        let (mut stack, rx, _tx) = test_stack(Medium::Ethernet);
+        let raw = stack.add_raw_socket().unwrap();
+        stack
+            .raw_socket(raw)
+            .bind(RawMode::Ip {
+                version: None,
+                protocol: Some(IpProtocol(99)),
+            })
+            .unwrap();
+
+        for padding in [40usize, 100] {
+            let packet = ipv4_packet(REMOTE_V4, OUR_V4, IpProtocol(99), b"abcd");
+            let mut padded = packet.clone();
+            padded.extend(std::iter::repeat_n(0xee, padding));
+            inject(
+                &mut stack,
+                &rx,
+                eth_frame_from(OTHER_HW, OUR_HW, EthernetProtocol::Ipv4, &padded),
+            );
+            let recv = stack.raw_socket(raw).recv().unwrap();
+            assert_eq!(recv.len(), IPV4_HEADER_LEN + 4);
+            assert_eq!(&*recv, &packet[..]);
+
+            let packet = ipv6_packet(REMOTE_V6, OUR_V6, IpProtocol(99), b"abcd");
+            let mut padded = packet.clone();
+            padded.extend(std::iter::repeat_n(0xee, padding));
+            inject(
+                &mut stack,
+                &rx,
+                eth_frame_from(OTHER_HW, OUR_HW, EthernetProtocol::Ipv6, &padded),
+            );
+            let recv = stack.raw_socket(raw).recv().unwrap();
+            assert_eq!(recv.len(), IPV6_HEADER_LEN + 4);
+            assert_eq!(&*recv, &packet[..]);
+        }
+
+        // Shorter than the length field claims: dropped, not delivered.
+        let packet = ipv4_packet(REMOTE_V4, OUR_V4, IpProtocol(99), b"abcd");
+        inject(
+            &mut stack,
+            &rx,
+            eth_frame_from(OTHER_HW, OUR_HW, EthernetProtocol::Ipv4, &packet[..packet.len() - 1]),
+        );
+        let packet = ipv6_packet(REMOTE_V6, OUR_V6, IpProtocol(99), b"abcd");
+        inject(
+            &mut stack,
+            &rx,
+            eth_frame_from(OTHER_HW, OUR_HW, EthernetProtocol::Ipv6, &packet[..packet.len() - 1]),
+        );
+        assert!(!stack.raw_socket(raw).can_recv());
     }
 }

@@ -879,6 +879,68 @@ mod test {
     }
 }
 
+#[cfg(all(test, feature = "medium-ethernet", feature = "ipv4"))]
+mod test_ethernet {
+    use super::*;
+
+    /// An Ethernet frame with an unknown ethertype, and truncated at every
+    /// length: walked without panicking. (The old stack's tracer printed
+    /// "EthernetII src=00-01-02-03-04-05 dst=05-04-03-02-01-00 type=0x0000".)
+    #[test]
+    fn test_log_ethernet() {
+        let mut frame = [
+            0x05, 0x04, 0x03, 0x02, 0x01, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x00, 0x00, 0xaa, 0xbb,
+        ];
+        log_ethernet(&mut frame);
+        for len in 0..frame.len() {
+            log_ethernet(&mut frame.clone()[..len]);
+        }
+    }
+
+    /// An ARP request inside an Ethernet frame, whole and truncated.
+    #[test]
+    fn test_log_arp() {
+        let mut frame = vec![
+            0x05, 0x04, 0x03, 0x02, 0x01, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x08, 0x06,
+        ];
+        frame.extend_from_slice(&[
+            0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x01, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x21, 0x22, 0x23, 0x24,
+            0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x41, 0x42, 0x43, 0x44,
+        ]);
+        log_ethernet(&mut frame);
+        for len in 0..frame.len() {
+            log_ethernet(&mut frame.clone()[..len]);
+        }
+    }
+
+    /// A bare IPv4 header with an unknown protocol (the old tracer printed
+    /// "IPv4 src=10.0.0.1 dst=10.0.0.2 proto=0xff"), whole and truncated, on
+    /// its own and inside an Ethernet frame.
+    #[test]
+    fn test_log_ipv4() {
+        let mut packet = [
+            0x45, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x00, 0x40, 0xff, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x01, 0x0a, 0x00,
+            0x00, 0x02,
+        ];
+        Ipv4Packet::new_unchecked(&mut packet[..]).fill_checksum();
+        log_ipv4(&mut packet);
+        log_ip(&mut packet);
+        for len in 0..packet.len() {
+            log_ipv4(&mut packet.clone()[..len]);
+            log_ip(&mut packet.clone()[..len]);
+        }
+
+        let mut frame = vec![
+            0x05, 0x04, 0x03, 0x02, 0x01, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x08, 0x00,
+        ];
+        frame.extend_from_slice(&packet);
+        log_ethernet(&mut frame);
+        for len in 0..frame.len() {
+            log_ethernet(&mut frame.clone()[..len]);
+        }
+    }
+}
+
 #[cfg(all(test, feature = "medium-ieee802154"))]
 mod test_sixlowpan {
     use super::*;

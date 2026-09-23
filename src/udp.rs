@@ -1119,6 +1119,17 @@ mod test {
 
     /// Build a queued-datagram buffer the way ingress does, as a full IPv4 + UDP packet.
     fn queued_packet_from(src_addr: Ipv4Addr, src_port: u16, dst_addr: Ipv4Addr, payload: &[u8]) -> PacketBuf {
+        queued_packet_to_port(src_addr, src_port, dst_addr, LOCAL_PORT, payload)
+    }
+
+    /// Like [`queued_packet_from`], with an explicit destination port.
+    fn queued_packet_to_port(
+        src_addr: Ipv4Addr,
+        src_port: u16,
+        dst_addr: Ipv4Addr,
+        dst_port: u16,
+        payload: &[u8],
+    ) -> PacketBuf {
         let udp_len = UDP_HEADER_LEN + payload.len();
         let mut buf = PacketBuf::try_new().unwrap();
         buf.set_len(IPV4_HEADER_LEN + udp_len);
@@ -1134,7 +1145,7 @@ mod test {
         {
             let mut udp = UdpPacket::new_unchecked(&mut buf[IPV4_HEADER_LEN..]);
             udp.set_src_port(src_port);
-            udp.set_dst_port(LOCAL_PORT);
+            udp.set_dst_port(dst_port);
             udp.set_len(udp_len as u16);
             udp.payload_mut().copy_from_slice(payload);
             udp.fill_checksum(&src_addr.into(), &dst_addr.into());
@@ -1168,6 +1179,20 @@ mod test {
         let mut buf = queued_packet_from(src_addr, src_port, dst_addr, payload);
         buf.pull_front(IPV4_HEADER_LEN);
         stack.process_udp(iface, src_addr.into(), dst_addr.into(), IPV4_HEADER_LEN, false, buf);
+    }
+
+    /// Like [`deliver`], with an explicit destination port.
+    fn deliver_to_port(stack: &mut Stack, dst_port: u16, payload: &[u8]) {
+        let mut buf = queued_packet_to_port(REMOTE_ADDR, REMOTE_PORT, LOCAL_ADDR, dst_port, payload);
+        buf.pull_front(IPV4_HEADER_LEN);
+        stack.process_udp(
+            IfaceHandle::new(0),
+            REMOTE_ADDR.into(),
+            LOCAL_ADDR.into(),
+            IPV4_HEADER_LEN,
+            false,
+            buf,
+        );
     }
 
     #[test]
@@ -1691,6 +1716,207 @@ mod test {
         assert!(!socket.can_recv());
     }
 
+    const LOCAL_ADDR_V6: Ipv6Addr = Ipv6Addr::new(0xfdaa, 0, 0, 0, 0, 0, 0, 1);
+    const REMOTE_ADDR_V6: Ipv6Addr = Ipv6Addr::new(0xfdaa, 0, 0, 0, 0, 0, 0, 2);
+
+    /// Check the UDP header of a sent datagram: ports, length, payload and checksum.
+    fn check_udp_header(udp_bytes: &mut [u8], src_addr: IpAddr, dst_addr: IpAddr, payload: &[u8]) {
+        let udp = UdpPacket::new_checked(udp_bytes).unwrap();
+        assert_eq!(udp.src_port(), LOCAL_PORT);
+        assert_eq!(udp.dst_port(), REMOTE_PORT);
+        assert_eq!(udp.len() as usize, UDP_HEADER_LEN + payload.len());
+        assert_eq!(udp.payload(), payload);
+        assert!(udp.verify_checksum(&src_addr, &dst_addr));
+    }
+
+    #[test]
+    fn test_set_hop_limit() {
+        // The socket's hop limit ends up in the IP header of every datagram it
+        // sends, 64 by default. The rest of the headers are checked while at it.
+        let driver = TestDevice::new(Medium::Ip);
+        let tx = driver.tx.clone();
+        let mut stack = Stack::new(0x1234_5678_dead_beef);
+        let iface = driver.install(&mut stack, HardwareAddress::Ip);
+        stack
+            .iface(iface)
+            .add_ip_addr(IpCidr::new(LOCAL_ADDR.into(), 24))
+            .unwrap();
+        stack
+            .iface(iface)
+            .add_ip_addr(IpCidr::new(LOCAL_ADDR_V6.into(), 64))
+            .unwrap();
+        // Adding an IPv6 address may make the stack transmit on its own.
+        tx.borrow_mut().clear();
+
+        let handle = stack.add_udp_socket().unwrap();
+        let mut socket = stack.udp_socket(handle);
+        socket.bind(LOCAL_PORT, ANY).unwrap();
+        assert_eq!(socket.hop_limit(), None);
+
+        // IPv4, default hop limit.
+        socket.send_slice(b"abcdef", (REMOTE_ADDR, REMOTE_PORT)).unwrap();
+        {
+            let mut frames = tx.borrow_mut();
+            assert_eq!(frames.len(), 1);
+            let mut ip = Ipv4Packet::new_checked(&mut frames[0][..]).unwrap();
+            assert_eq!(ip.hop_limit(), 64);
+            assert_eq!(ip.src_addr(), LOCAL_ADDR);
+            assert_eq!(ip.dst_addr(), REMOTE_ADDR);
+            assert_eq!(ip.next_header(), IpProtocol::Udp);
+            assert_eq!(ip.total_len() as usize, IPV4_HEADER_LEN + UDP_HEADER_LEN + 6);
+            assert!(ip.verify_checksum());
+            check_udp_header(ip.payload_mut(), LOCAL_ADDR.into(), REMOTE_ADDR.into(), b"abcdef");
+        }
+
+        // IPv6, default hop limit.
+        socket.send_slice(b"abcdef", (REMOTE_ADDR_V6, REMOTE_PORT)).unwrap();
+        {
+            let mut frames = tx.borrow_mut();
+            assert_eq!(frames.len(), 2);
+            let mut ip = Ipv6Packet::new_checked(&mut frames[1][..]).unwrap();
+            assert_eq!(ip.hop_limit(), 64);
+            assert_eq!(ip.src_addr(), LOCAL_ADDR_V6);
+            assert_eq!(ip.dst_addr(), REMOTE_ADDR_V6);
+            assert_eq!(ip.next_header(), IpProtocol::Udp);
+            assert_eq!(ip.total_len(), IPV6_HEADER_LEN + UDP_HEADER_LEN + 6);
+            check_udp_header(ip.payload_mut(), LOCAL_ADDR_V6.into(), REMOTE_ADDR_V6.into(), b"abcdef");
+        }
+
+        // An explicit hop limit, in both header builders.
+        socket.set_hop_limit(Some(0x2a)).unwrap();
+        assert_eq!(socket.hop_limit(), Some(0x2a));
+        socket.send_slice(b"abcdef", (REMOTE_ADDR, REMOTE_PORT)).unwrap();
+        socket.send_slice(b"abcdef", (REMOTE_ADDR_V6, REMOTE_PORT)).unwrap();
+        {
+            let mut frames = tx.borrow_mut();
+            assert_eq!(frames.len(), 4);
+            let ip = Ipv4Packet::new_checked(&mut frames[2][..]).unwrap();
+            assert_eq!(ip.hop_limit(), 0x2a);
+            let ip = Ipv6Packet::new_checked(&mut frames[3][..]).unwrap();
+            assert_eq!(ip.hop_limit(), 0x2a);
+        }
+
+        // Zero is rejected and the previous value stays.
+        assert_eq!(socket.set_hop_limit(Some(0)), Err(InvalidHopLimit));
+        assert_eq!(socket.hop_limit(), Some(0x2a));
+
+        // `None` goes back to the default.
+        socket.set_hop_limit(None).unwrap();
+        assert_eq!(socket.hop_limit(), None);
+        socket.send_slice(b"abcdef", (REMOTE_ADDR, REMOTE_PORT)).unwrap();
+        {
+            let mut frames = tx.borrow_mut();
+            assert_eq!(frames.len(), 5);
+            let ip = Ipv4Packet::new_checked(&mut frames[4][..]).unwrap();
+            assert_eq!(ip.hop_limit(), 64);
+        }
+    }
+
+    #[test]
+    fn test_send_large_packet() {
+        // The biggest payload is what is left of a packet buffer once every header
+        // below UDP has its headroom. The device takes a whole buffer, so the
+        // interface MTU is never what limits the datagram.
+        let driver = TestDevice::new(Medium::Ip).with_mtu(crate::driver::config::PACKET_BUF_SIZE);
+        let tx = driver.tx.clone();
+        let mut stack = Stack::new(0x1234_5678_dead_beef);
+        let iface = driver.install(&mut stack, HardwareAddress::Ip);
+        stack
+            .iface(iface)
+            .add_ip_addr(IpCidr::new(LOCAL_ADDR.into(), 24))
+            .unwrap();
+        let handle = stack.add_udp_socket().unwrap();
+        let mut socket = stack.udp_socket(handle);
+        socket.bind(LOCAL_PORT, ANY).unwrap();
+
+        let max = crate::driver::config::PACKET_BUF_SIZE - (LINK_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN);
+        let remote = SocketAddr::new(REMOTE_ADDR.into(), REMOTE_PORT);
+
+        // One byte too many: rejected, nothing transmitted.
+        assert_eq!(socket.send_slice(&vec![0; max + 1], remote), Err(SendError::BufferFull));
+        assert!(tx.borrow().is_empty());
+        // The failed send gave its buffer back to the pool.
+        drop(PacketBuf::try_new().unwrap());
+
+        // Exactly the maximum: one frame carrying the whole datagram.
+        assert_eq!(socket.send_slice(&vec![0; max], remote), Ok(()));
+        let frames = tx.borrow();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].len(), IPV4_HEADER_LEN + UDP_HEADER_LEN + max);
+    }
+
+    #[test]
+    fn test_process_empty_payload() {
+        let mut stack = stack_with_iface();
+        let handle = stack.add_udp_socket().unwrap();
+        stack.udp_socket(handle).bind(LOCAL_PORT, ANY).unwrap();
+
+        deliver(&mut stack, REMOTE_ADDR, REMOTE_PORT, b"");
+        let mut socket = stack.udp_socket(handle);
+        assert!(socket.can_recv());
+        let packet = socket.recv().unwrap();
+        assert!(packet.is_empty());
+        assert_eq!(
+            packet.meta(),
+            UdpMetadata {
+                remote_addr: SocketAddr::new(REMOTE_ADDR.into(), REMOTE_PORT),
+                local_addr: Some(LOCAL_ADDR.into()),
+                meta: PacketMeta::default(),
+            }
+        );
+        drop(packet);
+        assert!(!socket.can_recv());
+
+        // The same through the copying API.
+        deliver(&mut stack, REMOTE_ADDR, REMOTE_PORT, b"");
+        let mut socket = stack.udp_socket(handle);
+        let mut slice = [0; 4];
+        let (len, meta) = socket.recv_slice(&mut slice).unwrap();
+        assert_eq!(len, 0);
+        assert_eq!(meta.remote_addr, SocketAddr::new(REMOTE_ADDR.into(), REMOTE_PORT));
+        assert_eq!(meta.local_addr, Some(LOCAL_ADDR.into()));
+        assert!(!socket.can_recv());
+    }
+
+    #[test]
+    fn test_send_unaddressable() {
+        let mut stack = stack_with_iface();
+        let handle = stack.add_udp_socket().unwrap();
+        let mut socket = stack.udp_socket(handle);
+
+        // Unbound: the old stack reported Unaddressable here, this one has a
+        // dedicated error for it.
+        assert_eq!(
+            socket.send_slice(b"abcdef", (REMOTE_ADDR, REMOTE_PORT)),
+            Err(SendError::InvalidState)
+        );
+
+        socket.bind(LOCAL_PORT, ANY).unwrap();
+        // An unspecified destination address or port is no destination.
+        assert_eq!(
+            socket.send_slice(b"abcdef", (Ipv4Addr::UNSPECIFIED, REMOTE_PORT)),
+            Err(SendError::Unaddressable)
+        );
+        assert_eq!(
+            socket.send_slice(b"abcdef", (REMOTE_ADDR, 0)),
+            Err(SendError::Unaddressable)
+        );
+        assert_eq!(socket.send_slice(b"abcdef", (REMOTE_ADDR, REMOTE_PORT)), Ok(()));
+    }
+
+    #[test]
+    fn test_doesnt_accept_wrong_port() {
+        let mut stack = stack_with_iface();
+        let handle = stack.add_udp_socket().unwrap();
+        stack.udp_socket(handle).bind(LOCAL_PORT, ANY).unwrap();
+
+        deliver_to_port(&mut stack, LOCAL_PORT + 1, b"no");
+        assert!(!stack.udp_socket(handle).can_recv());
+
+        deliver_to_port(&mut stack, LOCAL_PORT, b"yes");
+        assert_eq!(&*stack.udp_socket(handle).recv().unwrap(), b"yes");
+    }
+
     #[cfg(feature = "iface-bind")]
     const LOCAL2_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 2, 1);
     #[cfg(feature = "iface-bind")]
@@ -1863,22 +2089,5 @@ mod test {
             stack.udp_socket(handle).bind(0, (REMOTE_ADDR, REMOTE_PORT)),
             Err(BindError::Unaddressable)
         );
-    }
-
-    #[test]
-    fn test_set_hop_limit() {
-        let (mut stack, handle) = stack_with_socket();
-        let mut socket = stack.udp_socket(handle);
-        assert_eq!(socket.hop_limit(), None);
-
-        socket.set_hop_limit(Some(0x2a)).unwrap();
-        assert_eq!(socket.hop_limit(), Some(0x2a));
-
-        // Zero is rejected and the previous value stays.
-        assert_eq!(socket.set_hop_limit(Some(0)), Err(InvalidHopLimit));
-        assert_eq!(socket.hop_limit(), Some(0x2a));
-
-        socket.set_hop_limit(None).unwrap();
-        assert_eq!(socket.hop_limit(), None);
     }
 }

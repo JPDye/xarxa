@@ -3558,6 +3558,23 @@ mod test {
         }
     }
 
+    /// Deliver `syn` to a listener and accept it into a socket with 64-byte
+    /// buffers, returning that socket in SYN-RECEIVED.
+    #[cfg(feature = "tcp-listener")]
+    fn accepted_socket(syn: &TcpRepr) -> TestSocket {
+        let (mut stack, h) = listener_stack();
+        assert!(listener_deliver(&mut stack, syn));
+        let sh = listener_accept(&mut stack, h, 64, 64).unwrap();
+        TestSocket {
+            sockets: {
+                let mut sockets = Slab::new();
+                sockets.add_with(|_| stack.sockets.tcp.take(sh.index())).unwrap();
+                sockets
+            },
+            stack,
+        }
+    }
+
     #[cfg(feature = "tcp-listener")]
     #[test]
     fn test_listener_listen_validation() {
@@ -4027,7 +4044,20 @@ mod test {
         // When the remote offers window scaling, the accepted socket's shift
         // comes from its actual rx buffer capacity, and the SYN|ACK advertises
         // it (with the unscaled real window).
-        for (buffer_size, shift) in [(64, 0), (65535, 0), (65536, 1), (1048576, 5)] {
+        for (buffer_size, shift) in [
+            (64, 0),
+            (128, 0),
+            (1024, 0),
+            (65535, 0),
+            (65536, 1),
+            (65537, 1),
+            (131071, 1),
+            (131072, 2),
+            (524287, 3),
+            (524288, 4),
+            (655350, 4),
+            (1048576, 5),
+        ] {
             let (mut stack, h) = listener_stack();
             assert!(listener_deliver(
                 &mut stack,
@@ -4267,6 +4297,43 @@ mod test {
         assert_eq!(s.state, State::FinWait1);
     }
 
+    #[cfg(feature = "tcp-listener")]
+    #[test]
+    fn test_syn_received_window_scaling() {
+        // Whatever shift the remote offers is remembered once the handshake
+        // completes. With a 64-byte rx buffer our own shift is 0.
+        for scale in 0..14 {
+            let mut s = accepted_socket(&TcpRepr {
+                window_scale: Some(scale),
+                ..syn_repr()
+            });
+            assert_eq!(s.state, State::SynReceived);
+            assert_eq!(s.tuple, Some(TUPLE));
+            recv!(
+                s,
+                [TcpRepr {
+                    control: TcpControl::Syn,
+                    seq_number: LOCAL_SEQ,
+                    ack_number: Some(REMOTE_SEQ + 1),
+                    max_seg_size: Some(BASE_MSS),
+                    window_scale: Some(0),
+                    ..RECV_TEMPL
+                }]
+            );
+            send!(
+                s,
+                TcpRepr {
+                    seq_number: REMOTE_SEQ + 1,
+                    ack_number: Some(LOCAL_SEQ + 1),
+                    window_scale: None,
+                    ..SEND_TEMPL
+                }
+            );
+            assert_eq!(s.state, State::Established);
+            assert_eq!(s.remote_win_scale, Some(scale));
+        }
+    }
+
     // =========================================================================================//
     // Tests for the SYN-SENT state.
     // =========================================================================================//
@@ -4482,6 +4549,28 @@ mod test {
         );
         assert_eq!(s.state, State::Established);
         sack_ranges_are_never_emitted(&mut s);
+    }
+
+    /// RFC 2018: a SYN carrying SACK-Permitted gets a SYN|ACK offering it back.
+    #[test]
+    #[cfg(all(feature = "tcp-sack", feature = "tcp-listener"))]
+    fn test_syn_received_sack_offered_by_remote() {
+        let mut s = accepted_socket(&TcpRepr {
+            sack_permitted: true,
+            ..syn_repr()
+        });
+        assert!(s.remote_has_sack);
+        recv!(
+            s,
+            [TcpRepr {
+                control: TcpControl::Syn,
+                seq_number: LOCAL_SEQ,
+                ack_number: Some(REMOTE_SEQ + 1),
+                max_seg_size: Some(BASE_MSS),
+                sack_permitted: true,
+                ..RECV_TEMPL
+            }]
+        );
     }
 
     // Ensure that SACK ranges are not attached to ACKs after receiving out of
@@ -10161,21 +10250,6 @@ mod test {
         );
     }
 
-    #[cfg(feature = "tcp-timestamps")]
-    fn accepted_socket(syn: &TcpRepr) -> TestSocket {
-        let (mut stack, h) = listener_stack();
-        assert!(listener_deliver(&mut stack, syn));
-        let sh = listener_accept(&mut stack, h, 64, 64).unwrap();
-        TestSocket {
-            sockets: {
-                let mut sockets = Slab::new();
-                sockets.add_with(|_| stack.sockets.tcp.take(sh.index())).unwrap();
-                sockets
-            },
-            stack,
-        }
-    }
-
     #[test]
     #[cfg(feature = "tcp-timestamps")]
     fn test_tsval_in_accepted_socket() {
@@ -11694,6 +11768,35 @@ mod stack_test {
         }));
         stack.poll(Instant::from_millis(1));
         assert!(driver.tx.borrow().is_empty());
+    }
+
+    #[test]
+    #[cfg(feature = "tcp-listener")]
+    fn test_stack_listener_rejects_syn_ack() {
+        // A SYN carrying an ACK is not a connection attempt, so it falls past
+        // the listener to the RST fallback: an RST at the acked sequence
+        // number, and nothing queued for accept.
+        let (mut stack, driver) = stack();
+        let lh = stack.add_tcp_listener().unwrap();
+        stack.tcp_listener(lh).listen(LOCAL_PORT).unwrap();
+
+        driver.rx.borrow_mut().push_back(tcp_packet(&TcpRepr {
+            control: TcpControl::Syn,
+            seq_number: REMOTE_SEQ,
+            ack_number: Some(LOCAL_SEQ),
+            ..SEND_TEMPL
+        }));
+        stack.poll(Instant::from_millis(0));
+
+        let mut frame = driver.tx.borrow_mut().remove(0);
+        parse_tx(&mut frame, |tcp| {
+            assert!(tcp.rst());
+            assert!(!tcp.ack());
+            assert_eq!(tcp.seq_number(), LOCAL_SEQ);
+        });
+        assert!(driver.tx.borrow().is_empty());
+        assert!(!stack.tcp_listener(lh).can_accept());
+        assert!(stack.tcp_listener(lh).is_open());
     }
 
     #[test]

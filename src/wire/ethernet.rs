@@ -213,6 +213,19 @@ mod test {
         assert!(Address::BROADCAST.is_multicast());
         assert!(Address::BROADCAST.is_local());
     }
+
+    /// The modified EUI-64 of a MAC: the U/L bit flipped, `ff:fe` in the middle.
+    #[test]
+    fn test_as_eui_64() {
+        assert_eq!(
+            Address([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]).as_eui_64(),
+            [0xa8, 0xbb, 0xcc, 0xff, 0xfe, 0xdd, 0xee, 0xff]
+        );
+        assert_eq!(
+            Address([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).as_eui_64(),
+            [0x00, 0x00, 0x00, 0xff, 0xfe, 0x00, 0x00, 0x01]
+        );
+    }
 }
 
 #[cfg(test)]
