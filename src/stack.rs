@@ -263,6 +263,20 @@ impl TxContext<'_, '_> {
         self.ifaces.iter().any(|(_, iface)| iface.has_ip_addr(addr))
     }
 
+    /// Whether a socket may bind its local address to this address.
+    ///
+    /// The rule is Linux's, from `inet_bind`: the address must be one of ours,
+    /// a broadcast address of some interface, or a multicast group. Anything
+    /// else can never be the destination of a packet we accept, so binding to
+    /// it is a mistake rather than a filter, and is rejected at the call
+    /// instead of leaving a socket that silently receives nothing.
+    ///
+    /// Wildcards (absent or unspecified addresses) never reach here.
+    #[cfg(feature = "udp")]
+    pub(crate) fn is_bindable_addr(&self, addr: &IpAddr) -> bool {
+        addr.is_multicast() || self.has_ip_addr(*addr) || self.ifaces.iter().any(|(_, iface)| iface.is_broadcast(addr))
+    }
+
     /// Get a source address for sending to the given destination, selected from the
     /// interface the packet would go out of, honoring the socket's interface
     /// binding.

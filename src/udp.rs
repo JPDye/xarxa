@@ -238,10 +238,6 @@ impl UdpSocketState {
     /// datagram. Connected sockets outscore bound-only ones, and exact addresses
     /// outscore wildcards (see [`addr_score`]).
     ///
-    /// `dst_is_bcast` relaxes the local-address filter: sockets bound to a
-    /// specific address also accept broadcast/multicast traffic on their port.
-    /// It never relaxes the IP version.
-    ///
     /// `arrival` is the interface the packet came in on, checked against the
     /// socket's interface binding. `None` skips that check: ICMP errors are
     /// delivered regardless of the interface they arrive on.
@@ -252,7 +248,6 @@ impl UdpSocketState {
         src_port: u16,
         dst_addr: &IpAddr,
         dst_port: u16,
-        dst_is_bcast: bool,
     ) -> Option<u8> {
         // The local port is always concrete on a bound socket, and must match.
         if self.local.port != dst_port {
@@ -262,13 +257,7 @@ impl UdpSocketState {
             Some(arrival) => self.binding.match_score(arrival)?,
             None => 0,
         };
-        score += match addr_score(&self.local, dst_addr) {
-            Some(score) => score,
-            // Bound to one address, and this is broadcast/multicast traffic on
-            // its port: it gets it anyway, as long as the version is its own.
-            None if dst_is_bcast && self.local.version() == Some(dst_addr.version()) => 2,
-            None => return None,
-        };
+        score += addr_score(&self.local, dst_addr)?;
         score += addr_score(&self.remote, src_addr)?;
         if self.remote.port != 0 {
             if self.remote.port != src_port {
@@ -480,7 +469,9 @@ impl UdpSocket<'_, '_> {
     /// - `None`: the socket sends/receives packets with any local address. It receives packets destined to unicast, multicast and broadcast addresses.
     /// - `Some(V4(UNSPECIFIED))`: same as `None`, but IPv4 packets only.
     /// - `Some(V6(UNSPECIFIED))`: same as `None`, but IPv6 packets only.
-    /// - `Some(_)`: the socket sends/receives packets from/to the given local address only. Multicast and broadcast addresses are allowed, but then the socket can receive only, not send.
+    /// - `Some(_)`: the socket sends/receives packets from/to the given local address only.
+    ///   - If unicast, the stack checks the address is ours, else returns `Unaddressable`.
+    ///   - Multicast and broadcast addresses are allowed, but then the socket can receive only, not send.
     ///
     /// # Local port
     ///
@@ -507,13 +498,16 @@ impl UdpSocket<'_, '_> {
     /// matches multiple sockets, the one with the most specific binding wins.
     /// Packets are not duplicated, only the winning socket will receive it.
     ///
+    /// Multicast groups are not joined automatically, you must call [`Iface::join_multicast_group`](crate::Iface::join_multicast_group) yourself.
+    ///
     /// # Errors
     /// - `InvalidState`: if the socket is already bound (see
     ///   [is_open](#method.is_open)).
     /// - `InUse`: on an identical bind.
     /// - `NoFreePorts`: if the ephemeral range is exhausted.
-    /// - `Unaddressable`: on an address family mismatch, or if no local address
-    ///   is available for the given remote.
+    /// - `Unaddressable`: on an address family mismatch, if the local address is
+    ///   not ours, or if no local address is available for the given
+    ///   remote.
     pub fn bind(
         &mut self,
         local: impl Into<ListenSocketAddr>,
@@ -530,6 +524,17 @@ impl UdpSocket<'_, '_> {
         // an address.
         if let (Some(local_version), Some(remote_version)) = (local.version(), remote.version())
             && local_version != remote_version
+        {
+            return Err(BindError::Unaddressable);
+        }
+
+        // The local address must be one we could actually receive on: one of ours,
+        // a broadcast address, or a multicast group (Linux's `inet_bind` rule).
+        // Binding to anything else never matches a packet, so it is a mistake
+        // rather than a filter, and saying so here beats a socket that silently
+        // receives nothing and fails every send.
+        if let Some(addr) = local.concrete_addr()
+            && !self.tx.is_bindable_addr(&addr)
         {
             return Err(BindError::Unaddressable);
         }
@@ -950,19 +955,7 @@ impl Stack<'_> {
         buf.set_len(udp_len);
         buf.push_front(ip_header_len);
 
-        // Sockets bound to a specific address also accept broadcast/multicast traffic
-        // on their port.
-        let dst_is_bcast = self.ifaces.get(iface.index()).is_broadcast(&dst_addr) || dst_addr.is_multicast();
-
-        if let Some(index) = demux(
-            &self.sockets.udp,
-            Some(iface),
-            &src_addr,
-            src_port,
-            &dst_addr,
-            dst_port,
-            dst_is_bcast,
-        ) {
+        if let Some(index) = demux(&self.sockets.udp, Some(iface), &src_addr, src_port, &dst_addr, dst_port) {
             let socket = self.sockets.udp.get_mut(index);
             trace!(
                 "udp:{}: receiving {} octets from {}:{}",
@@ -1015,11 +1008,10 @@ fn demux(
     src_port: u16,
     dst_addr: &IpAddr,
     dst_port: u16,
-    dst_is_bcast: bool,
 ) -> Option<usize> {
     let mut best: Option<(usize, u8)> = None;
     for (index, socket) in sockets.iter() {
-        if let Some(score) = socket.match_score(iface, src_addr, src_port, dst_addr, dst_port, dst_is_bcast)
+        if let Some(score) = socket.match_score(iface, src_addr, src_port, dst_addr, dst_port)
             && best.is_none_or(|(_, best_score)| score > best_score)
         {
             best = Some((index, score));
@@ -1041,7 +1033,7 @@ pub(crate) fn process_icmp_error(
     local: SocketAddr,
     remote: SocketAddr,
 ) {
-    if let Some(index) = demux(sockets, None, &remote.addr, remote.port, &local.addr, local.port, false) {
+    if let Some(index) = demux(sockets, None, &remote.addr, remote.port, &local.addr, local.port) {
         let socket = sockets.get_mut(index);
         trace!("udp:{}: icmp error from {}: {}", socket.local, remote, error);
         socket.pending_error = Some((error, remote));
@@ -1197,7 +1189,8 @@ mod test {
 
     #[test]
     fn test_bind() {
-        let (mut stack, handle) = stack_with_socket();
+        let mut stack = stack_with_iface();
+        let handle = stack.add_udp_socket().unwrap();
         let mut socket = stack.udp_socket(handle);
         assert!(!socket.is_open());
         assert_eq!(socket.bind(LOCAL_PORT, ANY), Ok(()));
@@ -1238,7 +1231,12 @@ mod test {
 
     #[test]
     fn test_bind_conflicts() {
-        let mut stack = Stack::new(0x1234_5678_dead_beef);
+        let mut stack = stack_with_iface();
+        // Both addresses must be bindable, i.e. ours.
+        stack
+            .iface(IfaceHandle::new(0))
+            .add_ip_addr(IpCidr::new(OTHER_ADDR.into(), 24))
+            .unwrap();
         let h1 = stack.add_udp_socket().unwrap();
         let h2 = stack.add_udp_socket().unwrap();
 
@@ -1438,6 +1436,98 @@ mod test {
         assert_eq!(&*stack.udp_socket(handle).recv().unwrap(), b"a");
         assert_eq!(&*stack.udp_socket(handle).recv().unwrap(), b"b");
         assert!(!stack.udp_socket(handle).can_recv());
+    }
+
+    #[test]
+    fn test_bind_addr_must_be_receivable() {
+        // The local address must be one a packet could actually be addressed to:
+        // ours, a broadcast address, or a multicast group. Linux's `inet_bind`
+        // rule, and it catches a stale or mistyped address at the call instead of
+        // leaving a socket that receives nothing and cannot send.
+        let mut stack = stack_with_iface();
+        let h = stack.add_udp_socket().unwrap();
+
+        // Ours.
+        stack.udp_socket(h).bind((LOCAL_ADDR, LOCAL_PORT), ANY).unwrap();
+        stack.udp_socket(h).close();
+
+        // On-link, but not ours: rejected. This is the case worth catching, since
+        // it looks plausible.
+        assert_eq!(
+            stack.udp_socket(h).bind((OTHER_ADDR, LOCAL_PORT), ANY),
+            Err(BindError::Unaddressable)
+        );
+        // Off-link and not ours: likewise.
+        assert_eq!(
+            stack
+                .udp_socket(h)
+                .bind((Ipv4Addr::new(203, 0, 113, 9), LOCAL_PORT), ANY),
+            Err(BindError::Unaddressable)
+        );
+
+        // The subnet broadcast address of one of our prefixes, and the limited
+        // broadcast address.
+        stack
+            .udp_socket(h)
+            .bind((Ipv4Addr::new(192, 168, 1, 255), LOCAL_PORT), ANY)
+            .unwrap();
+        stack.udp_socket(h).close();
+        stack
+            .udp_socket(h)
+            .bind((Ipv4Addr::BROADCAST, LOCAL_PORT), ANY)
+            .unwrap();
+        stack.udp_socket(h).close();
+
+        // A multicast group, joined or not: binding to it is how a socket
+        // receives it, and it needs no interface of ours to carry it.
+        stack
+            .udp_socket(h)
+            .bind((Ipv4Addr::new(224, 0, 0, 251), LOCAL_PORT), ANY)
+            .unwrap();
+        stack.udp_socket(h).close();
+
+        // Wildcards are never checked.
+        stack.udp_socket(h).bind(LOCAL_PORT, ANY).unwrap();
+        stack.udp_socket(h).close();
+        stack
+            .udp_socket(h)
+            .bind((Ipv4Addr::UNSPECIFIED, LOCAL_PORT), ANY)
+            .unwrap();
+    }
+
+    #[test]
+    fn test_demux_broadcast_and_multicast() {
+        // A socket bound to one of our addresses receives only what is addressed
+        // to it: broadcast and multicast go to the wildcard socket, or to a
+        // socket bound to the broadcast/group address itself. Same as Linux, and
+        // what `bind`'s "from/to the given local address only" already promised.
+        const BCAST: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 255);
+        const GROUP: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+
+        let mut stack = stack_with_iface();
+        let h_addr = stack.add_udp_socket().unwrap();
+        let h_group = stack.add_udp_socket().unwrap();
+        stack.udp_socket(h_addr).bind((LOCAL_ADDR, LOCAL_PORT), ANY).unwrap();
+        stack.udp_socket(h_group).bind((GROUP, LOCAL_PORT), ANY).unwrap();
+
+        // Neither the broadcast nor the group datagram reaches the socket bound
+        // to LOCAL_ADDR; the group one reaches the socket bound to the group.
+        deliver_to(&mut stack, REMOTE_ADDR, REMOTE_PORT, BCAST, b"bcast");
+        deliver_to(&mut stack, REMOTE_ADDR, REMOTE_PORT, GROUP, b"group");
+        assert!(!stack.udp_socket(h_addr).can_recv());
+        assert_eq!(&*stack.udp_socket(h_group).recv().unwrap(), b"group");
+        assert!(!stack.udp_socket(h_group).can_recv());
+
+        // Unicast to its own address still arrives.
+        deliver(&mut stack, REMOTE_ADDR, REMOTE_PORT, b"unicast");
+        assert_eq!(&*stack.udp_socket(h_addr).recv().unwrap(), b"unicast");
+
+        // A wildcard socket takes broadcast, and beats nothing else on the port.
+        let h_any = stack.add_udp_socket().unwrap();
+        stack.udp_socket(h_any).bind(LOCAL_PORT, ANY).unwrap();
+        deliver_to(&mut stack, REMOTE_ADDR, REMOTE_PORT, BCAST, b"bcast2");
+        assert_eq!(&*stack.udp_socket(h_any).recv().unwrap(), b"bcast2");
+        assert!(!stack.udp_socket(h_addr).can_recv());
     }
 
     #[test]
