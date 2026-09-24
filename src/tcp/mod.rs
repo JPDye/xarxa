@@ -2075,8 +2075,6 @@ impl<'d> TcpSocketState<'d> {
                         .tx_buffer
                         .get_allocated(repr.payload.len(), size - repr.payload.len());
 
-                    self.pending_fast_retransmit = false;
-
                     0
                 } else {
                     // Right edge of window, ie the max sequence number we're allowed to send.
@@ -2193,6 +2191,11 @@ impl<'d> TcpSocketState<'d> {
         // to not waste time waiting for the retransmit timer on packets that we know
         // for sure will not be successfully transmitted.
         emit(cx, (route, tuple.local.addr, tuple.remote.addr, hop_limit, repr))?;
+
+        // A full device must retry the same fast retransmit, not lose it.
+        if self.pending_fast_retransmit && repr.payload_len() != 0 {
+            self.pending_fast_retransmit = false;
+        }
 
         // We've sent something, whether useful data or a keep-alive packet, so rewind
         // the keep-alive timer.
@@ -8011,6 +8014,46 @@ mod test {
             u8::MAX,
             "duplicate ACK count should not overflow but saturate"
         );
+    }
+
+    #[test]
+    fn test_fast_retransmit_retries_when_device_refuses_packet() {
+        let mut s = socket_established();
+        s.remote_mss = 6;
+        s.view().send_slice(b"abcdef123456").unwrap();
+        recv!(s, time 0, [
+            TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1),
+                payload: &b"abcdef"[..],
+                ..RECV_TEMPL
+            },
+            TcpRepr {
+                seq_number: LOCAL_SEQ + 7,
+                ack_number: Some(REMOTE_SEQ + 1),
+                payload: &b"123456"[..],
+                ..RECV_TEMPL
+            }
+        ]);
+
+        for _ in 0..4 {
+            send!(s, time 1, TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                ..SEND_TEMPL
+            });
+        }
+
+        s.stack.inner.now = Instant::from_millis(2);
+        let refused: Result<(), ()> = s.sockets.get_mut(0).dispatch(&mut s.stack.tx_context(), |_, _| Err(()));
+        assert_eq!(refused, Err(()));
+
+        recv!(s, time 3, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload: &b"abcdef"[..],
+            ..RECV_TEMPL
+        }));
     }
 
     #[test]
