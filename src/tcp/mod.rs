@@ -1614,7 +1614,28 @@ impl<'d> TcpSocketState<'d> {
         }
     }
 
+    /// Whether the connection timeout applies right now: while a handshake is in
+    /// progress, while data or a FIN is waiting to be sent or ACKed, or while
+    /// keep-alive is probing a synchronized connection. An idle connection never
+    /// times out, like Linux's `TCP_USER_TIMEOUT`.
+    ///
+    /// On every transition from unarmed to armed `remote_last_ts` must be cleared,
+    /// so that the timeout counts from the first transmitted packet rather than from
+    /// a packet received long ago.
+    fn timeout_armed(&self) -> bool {
+        match self.state {
+            State::Closed | State::TimeWait => false,
+            State::SynSent | State::SynReceived | State::FinWait1 | State::Closing | State::LastAck => true,
+            State::Established | State::FinWait2 | State::CloseWait => {
+                !self.tx_buffer.is_empty() || self.keep_alive.is_some()
+            }
+        }
+    }
+
     fn timed_out(&self, timestamp: Instant) -> bool {
+        if !self.timeout_armed() {
+            return false;
+        }
         match (self.remote_last_ts, self.timeout) {
             (Some(remote_last_ts), Some(timeout)) => timestamp >= remote_last_ts + timeout,
             (_, _) => false,
@@ -1867,14 +1888,13 @@ impl<'d> TcpSocketState<'d> {
         // NOTE(unwrap): we check tuple is not None above.
         let tuple = self.tuple.unwrap();
 
-        if self.remote_last_ts.is_none() {
-            // We get here in exactly two cases:
-            //  1) This socket just transitioned into SYN-SENT.
-            //  2) This socket had an empty transmit buffer and some data was added there.
-            // Both are similar in that the socket has been quiet for an indefinite
-            // period of time, it isn't anymore, and the local peer is talking.
-            // So, we start counting the timeout not from the last received packet
-            // but from the first transmitted one.
+        if self.remote_last_ts.is_none() && self.timeout_armed() {
+            // The timeout just became armed: the socket entered SYN-SENT or
+            // SYN-RECEIVED, got data or a FIN to send while idle, or had keep-alive
+            // enabled while idle. The socket has been quiet for an indefinite period
+            // of time, it isn't anymore, and the local peer is talking. So, we start
+            // counting the timeout not from the last received packet but from the
+            // first transmitted one.
             self.remote_last_ts = Some(cx.now());
         }
 
@@ -2266,7 +2286,7 @@ impl<'d> TcpSocketState<'d> {
         if self.tuple.is_none() {
             // No one to talk to, nothing to transmit.
             Instant::MAX
-        } else if self.remote_last_ts.is_none() {
+        } else if self.remote_last_ts.is_none() && self.timeout_armed() {
             // Socket stopped being quiet recently, we need to acquire a timestamp.
             Instant::MIN
         } else if self.state == State::Closed {
@@ -2288,16 +2308,19 @@ impl<'d> TcpSocketState<'d> {
                 (true, AckDelayTimer::Immediate) => Instant::MIN,
             };
 
-            let timeout_poll_at = match (self.remote_last_ts, self.timeout) {
-                // If we're transmitting or retransmitting data, we need to poll at the moment
-                // when the timeout would expire.
-                (Some(remote_last_ts), Some(timeout)) => remote_last_ts + timeout,
-                // Otherwise we have no timeout.
-                (_, _) => Instant::MAX,
-            };
-
             // We wait for the earliest of our timers to fire.
-            self.timer.poll_at().min(timeout_poll_at).min(delayed_ack_poll_at)
+            self.timer.poll_at().min(self.timeout_poll_at()).min(delayed_ack_poll_at)
+        }
+    }
+
+    /// When the connection timeout expires, if it is armed.
+    fn timeout_poll_at(&self) -> Instant {
+        match (self.remote_last_ts, self.timeout) {
+            // If we're transmitting or retransmitting data, we need to poll at the moment
+            // when the timeout would expire.
+            (Some(remote_last_ts), Some(timeout)) if self.timeout_armed() => remote_last_ts + timeout,
+            // Otherwise we have no timeout.
+            (_, _) => Instant::MAX,
         }
     }
 
@@ -2308,10 +2331,7 @@ impl<'d> TcpSocketState<'d> {
     /// connection timeout, which must abort the connection even if the device
     /// never frees up.
     pub(crate) fn poll_at_blocked(&self) -> Instant {
-        match (self.remote_last_ts, self.timeout) {
-            (Some(remote_last_ts), Some(timeout)) => remote_last_ts + timeout,
-            (_, _) => Instant::MAX,
-        }
+        self.timeout_poll_at()
     }
 }
 
@@ -2514,6 +2534,8 @@ impl<'d> TcpSocket<'_, 'd> {
     ///     peer exceeds the specified duration between any two packets it sends;
     ///   * After enabling [keep-alive](#method.set_keep_alive), the remote peer exceeds
     ///     the specified duration between any two packets it sends.
+    ///
+    /// An idle connection, with nothing to send and keep-alive disabled, never times out.
     pub fn set_timeout(&mut self, duration: Option<Duration>) {
         self.inner_mut().timeout = duration
     }
@@ -2561,6 +2583,11 @@ impl<'d> TcpSocket<'_, 'd> {
     /// The keep-alive functionality together with the timeout functionality allows to react
     /// to these error conditions.
     pub fn set_keep_alive(&mut self, interval: Option<Duration>) {
+        // Enabling keep-alive on an idle connection arms the timeout. Restart it,
+        // like `send_impl` does.
+        if !self.inner().timeout_armed() {
+            self.inner_mut().remote_last_ts = None;
+        }
         self.inner_mut().keep_alive = interval;
         if self.inner_mut().keep_alive.is_some() {
             // If the connection is idle and we've just set the option, it would not take effect
@@ -2785,6 +2812,8 @@ impl<'d> TcpSocket<'_, 'd> {
     /// connection; only the remote end can close it. If you no longer wish to receive any
     /// data and would like to reuse the socket right away, use [abort](#method.abort).
     pub fn close(&mut self) {
+        // Queuing a FIN arms the timeout. Restart it, like `send_impl` does.
+        let was_armed = self.inner().timeout_armed();
         match self.inner_mut().state {
             // In the SYN-SENT state the remote peer is not yet synchronized and, upon
             // receiving an RST, will abort the connection.
@@ -2797,6 +2826,9 @@ impl<'d> TcpSocket<'_, 'd> {
             // the transmit half of the connection is already closed, and no further
             // action is needed.
             State::FinWait1 | State::FinWait2 | State::Closing | State::TimeWait | State::LastAck | State::Closed => (),
+        }
+        if !was_armed {
+            self.inner_mut().remote_last_ts = None;
         }
     }
 
@@ -2922,12 +2954,13 @@ impl<'d> TcpSocket<'_, 'd> {
 
         let s = self.inner_mut();
         let old_length = s.tx_buffer.len();
+        let was_armed = s.timeout_armed();
         let (size, result) = f(&mut s.tx_buffer);
         if size > 0 {
             // The connection might have been idle for a long time, and so remote_last_ts
             // would be far in the past. Unless we clear it here, we'll abort the connection
             // down over in dispatch() by erroneously detecting it as timed out.
-            if old_length == 0 {
+            if !was_armed {
                 s.remote_last_ts = None
             }
 
@@ -9260,7 +9293,8 @@ mod test {
         let mut s = socket_established();
         s.view().set_timeout(Some(Duration::from_millis(2000)));
         recv_nothing!(s, time 250);
-        assert_eq!(s.sockets.get_mut(0).poll_at(), Instant::from_millis(2250));
+        // Idle, nothing to send: no timeout.
+        assert_eq!(s.sockets.get_mut(0).poll_at(), Instant::MAX);
         s.view().send_slice(b"abcdef").unwrap();
         assert_eq!(s.sockets.get_mut(0).poll_at(), Instant::MIN);
         recv!(s, time 255, Ok(TcpRepr {
@@ -9281,6 +9315,172 @@ mod test {
             control:    TcpControl::Rst,
             seq_number: LOCAL_SEQ + 1 + 6,
             ack_number: Some(REMOTE_SEQ + 1),
+            ..RECV_TEMPL
+        }));
+        assert_eq!(s.state, State::Closed);
+    }
+
+    #[test]
+    fn test_established_idle_no_timeout() {
+        let mut s = socket_established();
+        s.view().set_timeout(Some(Duration::from_millis(2000)));
+        assert_eq!(s.sockets.get_mut(0).poll_at(), Instant::MAX);
+        recv_nothing!(s, time 5000);
+        assert_eq!(s.state, State::Established);
+
+        // Receiving data does not arm the timeout either.
+        send!(s, time 5000, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1),
+            payload:    &b"abcdef"[..],
+            ..SEND_TEMPL
+        });
+        recv!(s, time 5100, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1 + 6),
+            window_len: 58,
+            ..RECV_TEMPL
+        }));
+        assert_eq!(s.sockets.get_mut(0).poll_at(), Instant::MAX);
+        recv_nothing!(s, time 10000);
+        assert_eq!(s.state, State::Established);
+    }
+
+    #[test]
+    fn test_established_idle_after_ack_no_timeout() {
+        let mut s = socket_established();
+        s.view().set_timeout(Some(Duration::from_millis(2000)));
+        s.view().send_slice(b"abcdef").unwrap();
+        recv!(s, time 100, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"abcdef"[..],
+            ..RECV_TEMPL
+        }));
+        send!(s, time 200, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1 + 6),
+            ..SEND_TEMPL
+        });
+        // Everything is ACKed: the timeout is disarmed.
+        assert_eq!(s.sockets.get_mut(0).poll_at(), Instant::MAX);
+        recv_nothing!(s, time 5000);
+        assert_eq!(s.state, State::Established);
+
+        // Sending again after a long idle period counts the timeout from the
+        // new transmission, not from the last received packet.
+        s.view().send_slice(b"ghijkl").unwrap();
+        assert_eq!(s.sockets.get_mut(0).poll_at(), Instant::MIN);
+        recv!(s, time 5000, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 6,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"ghijkl"[..],
+            ..RECV_TEMPL
+        }));
+        assert_eq!(s.state, State::Established);
+        // First retransmission.
+        recv!(s, time 6000, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 6,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"ghijkl"[..],
+            ..RECV_TEMPL
+        }));
+        assert_eq!(s.sockets.get_mut(0).poll_at(), Instant::from_millis(7000));
+        recv!(s, time 7000, Ok(TcpRepr {
+            control:    TcpControl::Rst,
+            seq_number: LOCAL_SEQ + 1 + 12,
+            ack_number: Some(REMOTE_SEQ + 1),
+            ..RECV_TEMPL
+        }));
+        assert_eq!(s.state, State::Closed);
+    }
+
+    #[test]
+    fn test_established_idle_then_close_timeout() {
+        let mut s = socket_established();
+        s.view().set_timeout(Some(Duration::from_millis(2000)));
+        send!(s, time 100, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1),
+            payload:    &b"abcdef"[..],
+            ..SEND_TEMPL
+        });
+        recv!(s, time 200, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1 + 6),
+            window_len: 58,
+            ..RECV_TEMPL
+        }));
+        recv_nothing!(s, time 5000);
+        // The FIN goes out, instead of an immediate abort because of the long
+        // idle period.
+        s.view().close();
+        assert_eq!(s.sockets.get_mut(0).poll_at(), Instant::MIN);
+        recv!(s, time 5000, Ok(TcpRepr {
+            control:    TcpControl::Fin,
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1 + 6),
+            window_len: 58,
+            ..RECV_TEMPL
+        }));
+        assert_eq!(s.state, State::FinWait1);
+        recv!(s, time 6000, Ok(TcpRepr {
+            control:    TcpControl::Fin,
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1 + 6),
+            window_len: 58,
+            ..RECV_TEMPL
+        }));
+        recv!(s, time 7000, Ok(TcpRepr {
+            control:    TcpControl::Rst,
+            seq_number: LOCAL_SEQ + 1 + 1,
+            ack_number: Some(REMOTE_SEQ + 1 + 6),
+            window_len: 58,
+            ..RECV_TEMPL
+        }));
+        assert_eq!(s.state, State::Closed);
+    }
+
+    #[test]
+    fn test_established_idle_then_keep_alive_timeout() {
+        let mut s = socket_established();
+        s.view().set_timeout(Some(Duration::from_millis(100)));
+        send!(s, time 100, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1),
+            payload:    &b"abcdef"[..],
+            ..SEND_TEMPL
+        });
+        recv!(s, time 200, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1 + 6),
+            window_len: 58,
+            ..RECV_TEMPL
+        }));
+        recv_nothing!(s, time 5000);
+        // Enabling keep-alive after a long idle period counts the timeout from
+        // the first probe, not from the last received packet.
+        s.view().set_keep_alive(Some(Duration::from_millis(50)));
+        recv!(s, time 5000, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ,
+            ack_number: Some(REMOTE_SEQ + 1 + 6),
+            window_len: 58,
+            payload:    &[0],
+            ..RECV_TEMPL
+        }));
+        assert_eq!(s.state, State::Established);
+        recv!(s, time 5050, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ,
+            ack_number: Some(REMOTE_SEQ + 1 + 6),
+            window_len: 58,
+            payload:    &[0],
+            ..RECV_TEMPL
+        }));
+        recv!(s, time 5100, Ok(TcpRepr {
+            control:    TcpControl::Rst,
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1 + 6),
+            window_len: 58,
             ..RECV_TEMPL
         }));
         assert_eq!(s.state, State::Closed);
