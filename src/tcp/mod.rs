@@ -244,9 +244,12 @@ const RTTE_MIN_MARGIN: u32 = 5;
 /// K, according to RFC 6298
 const RTTE_K: u32 = 4;
 
-// RFC 6298 (2.4): Whenever RTO is computed, if it is less than 1 second, then the
+// RFC 6298 (2.4) says: Whenever RTO is computed, if it is less than 1 second, then the
 // RTO SHOULD be rounded up to 1 second.
-const RTTE_MIN_RTO: u32 = 1000;
+// However, this is too slow in practice for modern fast links, so we match the
+// minimum RTO found within linux and other OSes.
+// <https://elixir.bootlin.com/linux/v7.2.6/source/include/net/tcp.h#L162>
+const RTTE_MIN_RTO: u32 = 200;
 
 // RFC 6298 (2.5) A maximum value MAY be placed on RTO provided it is at least 60
 // seconds
@@ -9554,13 +9557,20 @@ mod test {
             ..RECV_TEMPL
         }));
         assert_eq!(s.state, State::Established);
-        // First retransmission.
-        recv!(s, time 6000, Ok(TcpRepr {
+        // Retransmissions, with the RTO of 300 ms from the RTT sample above.
+        recv!(s, time 5300, Ok(TcpRepr {
             seq_number: LOCAL_SEQ + 1 + 6,
             ack_number: Some(REMOTE_SEQ + 1),
             payload:    &b"ghijkl"[..],
             ..RECV_TEMPL
         }));
+        recv!(s, time 5900, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 6,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"ghijkl"[..],
+            ..RECV_TEMPL
+        }));
+        // The next retransmission would be at 7100, the timeout comes first.
         assert_eq!(s.deadline, Instant::from_millis(7000));
         recv!(s, time 7000, Ok(TcpRepr {
             control:    TcpControl::Rst,
