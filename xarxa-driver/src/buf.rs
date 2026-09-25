@@ -4,6 +4,10 @@
 //! whoever holds it (the driver, the stack, a socket, the application).
 //!
 //! Buffers are allocated from a static pool.
+//!
+//! On bare-metal targets (`target_os = "none"`), the pool is placed in
+//! `.bss.xarxa.packet_pool`. A linker script can place it in DMA-accessible RAM.
+//! That requires manually zeroing before using the pool.
 
 use core::cell::UnsafeCell;
 use core::fmt;
@@ -74,6 +78,7 @@ struct Pool {
 // slot, and the bitmap is atomic.
 unsafe impl Sync for Pool {}
 
+#[cfg_attr(target_os = "none", unsafe(link_section = ".bss.xarxa.packet_pool"))]
 static POOL: Pool = Pool {
     used: [const { AtomicU32::new(0) }; BITMAP_WORDS],
     slots: [const { UnsafeCell::new(MaybeUninit::zeroed()) }; PACKET_BUF_COUNT],
