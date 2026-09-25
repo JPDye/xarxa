@@ -2230,9 +2230,9 @@ pub(crate) fn transmit(
         debug!("no route to {}, dropping packet", dst_addr);
         return Ok(());
     };
-    if !cx.can_transmit(route.iface) {
-        trace!("device has no room for segment to {}, holding it back", dst_addr);
-        return Err(Blocked::DeviceBusy);
+    if let Err(blocked) = cx.can_transmit(route.iface) {
+        trace!("interface has no room for segment to {}, holding it back", dst_addr);
+        return Err(blocked);
     }
     let Some(buf) = build_tcp_packet(&repr, &src_addr, &dst_addr, &cx.checksum_caps(route.iface)) else {
         trace!("no packet buffer for segment to {}, holding it back", dst_addr);

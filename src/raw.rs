@@ -541,7 +541,7 @@ impl RawSocket<'_, '_> {
                     Some(iface) => iface,
                     None => self.tx.first_ethernet_iface().ok_or(SendError::Unaddressable)?,
                 };
-                if !self.tx.can_transmit(iface) {
+                if self.tx.can_transmit(iface).is_err() {
                     // `Stack::poll` wakes the socket once the interface has room.
                     #[cfg(feature = "async")]
                     {
@@ -600,7 +600,7 @@ impl RawSocket<'_, '_> {
                     .tx
                     .route(self.state.binding, &dst_addr)
                     .ok_or(SendError::Unaddressable)?;
-                if !self.tx.can_transmit(route.iface) {
+                if self.tx.can_transmit(route.iface).is_err() {
                     // `Stack::poll` wakes the socket once the interface has room.
                     #[cfg(feature = "async")]
                     {

@@ -176,4 +176,75 @@ fn exhaustion() {
         assert_eq!(stack.poll(retry), Instant::MAX);
         assert_eq!(tx.borrow().len(), 2);
     }
+
+    // A TCP segment held back behind fragments that wait for a buffer waits for a
+    // buffer too. It is retried soon even if the fragments get their buffer later in
+    // the same poll: the device never said no, so no wakeup would bring a poll.
+    #[cfg(all(feature = "tcp", feature = "ipv4-fragmentation"))]
+    {
+        use xarxa::driver::{Capabilities, Driver};
+        use xarxa::time::{Duration, Instant};
+
+        /// Hands the stack one junk frame, which it drops. That frees a buffer in
+        /// the middle of a poll, as a driver reclaiming a sent frame would.
+        struct Junk(Option<PacketBuf>);
+        impl Driver for Junk {
+            fn capabilities(&self) -> Capabilities {
+                let mut caps = Capabilities::default();
+                caps.medium = xarxa::driver::Medium::Ip;
+                caps
+            }
+            fn hardware_address(&self) -> xarxa::driver::HardwareAddress {
+                xarxa::driver::HardwareAddress::Ip
+            }
+            fn receive(&mut self) -> Option<PacketBuf> {
+                self.0.take()
+            }
+            fn can_transmit(&mut self) -> bool {
+                true
+            }
+            fn transmit(&mut self, _buf: PacketBuf) -> Result<(), PacketBuf> {
+                Ok(())
+            }
+        }
+
+        let mut stack = Stack::new(0x1234_5678_dead_beef);
+        let device = TestDevice::new(Medium::Ip).with_mtu(600);
+        let tx = device.tx.clone();
+        let iface = device.install(&mut stack, HardwareAddress::Ip);
+        stack
+            .iface(iface)
+            .add_ip_addr(IpCidr::new(Ipv4Addr::new(192, 168, 1, 1).into(), 24))
+            .unwrap();
+        let udp = stack.add_udp_socket().unwrap();
+        stack.udp_socket(udp).bind(1234, ListenSocketAddr::UNSPECIFIED).unwrap();
+        let tcp = stack
+            .add_tcp_socket_with_bufs(vec![0; 1024].leak(), vec![0; 1024].leak())
+            .unwrap();
+
+        // Take back what the steps above left free. Then the datagram takes the
+        // one free buffer, and its fragments wait.
+        while let Some(buf) = PacketBuf::try_new() {
+            again.push(buf);
+        }
+        drop(again.pop());
+        stack.udp_socket(udp).send_slice(&[0; 800], dst).unwrap();
+        assert!(tx.borrow().is_empty());
+        stack.tcp_socket(tcp).connect(dst, 0).unwrap();
+
+        // The second interface is polled after the first one's fragments tried and
+        // failed, and before they try again at the end of the poll.
+        drop(again.pop());
+        let junk = Junk(Some(PacketBuf::try_new().unwrap()));
+        stack.add_iface_borrowed(Box::leak(Box::new(junk))).unwrap();
+
+        let now = Instant::from_secs(1);
+        let retry = now + Duration::from_millis(1);
+        assert_eq!(stack.poll(now), retry);
+        assert_eq!(tx.borrow().len(), 2);
+
+        // The retry sends the SYN.
+        stack.poll(retry);
+        assert_eq!(tx.borrow().len(), 3);
+    }
 }

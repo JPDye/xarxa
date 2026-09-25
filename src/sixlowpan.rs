@@ -2024,7 +2024,7 @@ In at rhoncus tortor. Cras blandit tellus diam, varius vestibulum nibh commodo n
         );
         assert_eq!(tx.borrow().len(), 1);
 
-        // The neighbor resolves: its packet stays parked.
+        // The neighbor resolves while the fragmenter is busy: its packet stays parked.
         room.set(None);
         let na = ndisc_packet(
             Icmpv6Message::NeighborAdvert,
@@ -2036,15 +2036,14 @@ In at rhoncus tortor. Cras blandit tellus diam, varius vestibulum nibh commodo n
         );
         let (compressed, _) = compress(&na, other_ll, OUR_LL, 0);
         rx.borrow_mut().push_back(frame(other_ll, OUR_LL, PAN, &compressed));
-        stack.poll(Instant::ZERO);
-        // The poll that processed the advertisement also drained the fragmenter.
-        assert_eq!(tx.borrow().len(), 4);
-        for frame in tx.borrow().iter() {
-            assert_eq!(parse_frame(frame).0.dst_addr, Some(PEER_LL));
-        }
-        // The next poll flushes the parked packet, in fragments.
+        // The poll that processed the advertisement drains the fragmenter, then
+        // flushes the parked packet, in fragments. Nothing would bring another poll
+        // for it: the device never said no.
         stack.poll(Instant::ZERO);
         assert_eq!(tx.borrow().len(), 8);
+        for frame in tx.borrow()[..4].iter() {
+            assert_eq!(parse_frame(frame).0.dst_addr, Some(PEER_LL));
+        }
         for frame in tx.borrow()[4..].iter() {
             assert_eq!(parse_frame(frame).0.dst_addr, Some(other_ll));
         }

@@ -151,21 +151,39 @@ impl StackInner {
     }
 }
 
-/// Why a packet the stack sends by itself (a TCP segment, an IP fragment) could not
-/// go out right now. The packet is held back, not dropped, and retried later.
-#[cfg(any(feature = "tcp", feature = "ipv4-fragmentation", feature = "sixlowpan-fragmentation"))]
+/// Why a packet could not go out right now. The packet is held back, not dropped,
+/// and retried later.
+#[cfg(any(
+    feature = "udp",
+    feature = "tcp",
+    feature = "_raw",
+    feature = "medium-ethernet",
+    feature = "medium-ieee802154",
+    feature = "ipv4-fragmentation",
+    feature = "sixlowpan-fragmentation"
+))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Blocked {
     /// The egress device has no room. The driver wakes the poll task when it has.
     DeviceBusy,
     /// No packet buffer is free. Nothing signals when one is, so [`Stack::poll`]
     /// asks to be polled again after [`POOL_RETRY_DELAY`].
+    #[cfg_attr(
+        not(any(feature = "tcp", feature = "ipv4-fragmentation", feature = "sixlowpan-fragmentation")),
+        allow(dead_code)
+    )]
     NoBuffer,
 }
 
 /// How soon [`Stack::poll`] asks to be polled again while it holds a packet back
 /// for lack of a packet buffer.
-#[cfg(any(feature = "tcp", feature = "ipv4-fragmentation", feature = "sixlowpan-fragmentation"))]
+#[cfg(any(
+    feature = "tcp",
+    feature = "medium-ethernet",
+    feature = "medium-ieee802154",
+    feature = "ipv4-fragmentation",
+    feature = "sixlowpan-fragmentation"
+))]
 pub(crate) const POOL_RETRY_DELAY: crate::time::Duration = crate::time::Duration::from_millis(1);
 
 /// Borrowed stack context for socket egress.
@@ -294,15 +312,16 @@ impl TxContext<'_, '_> {
             .get_source_address(dst_addr, self.inner.now)
     }
 
-    /// Whether the interface can take one more frame right now.
+    /// Whether the interface can take one more packet right now.
     ///
     /// Asked before a packet is built, so that a device with no room holds the
-    /// sender back instead of losing the packet.
+    /// sender back instead of losing the packet. The error says what the sender
+    /// waits for.
     ///
     /// # Panics
     /// Panics if the handle is stale (the interface was removed).
     #[cfg(any(feature = "udp", feature = "tcp", feature = "_raw"))]
-    pub(crate) fn can_transmit(&mut self, iface: IfaceHandle) -> bool {
+    pub(crate) fn can_transmit(&mut self, iface: IfaceHandle) -> Result<(), Blocked> {
         self.ifaces.get_mut(iface.index()).can_transmit_new_packet()
     }
 
@@ -1080,13 +1099,18 @@ impl<'d> Stack<'d> {
             let Self { inner, ifaces, .. } = self;
             let iface = ifaces.get_mut(index);
 
-            #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
-            inner.flush_resolved_pending(iface);
-
             // Fragments go out before anything else the poll sends on the interface.
             // Those held back for lack of a buffer are retried after TCP, below.
             #[cfg(any(feature = "ipv4-fragmentation", feature = "sixlowpan-fragmentation"))]
             let _ = inner.fragment_egress(iface);
+
+            // Then the packets parked on a neighbor that has resolved. Nothing signals
+            // a freed buffer, so those held back behind fragments that wait for one
+            // are retried soon.
+            #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
+            if let Err(Blocked::NoBuffer) = inner.flush_resolved_pending(iface) {
+                clock.after(POOL_RETRY_DELAY);
+            }
 
             // Spot the link state edges: wake whoever waits on the interface, and on the
             // way back up restart configuration and report multicast memberships.
@@ -1133,7 +1157,8 @@ impl<'d> Stack<'d> {
             for (_, socket) in self.sockets.tcp.iter_mut() {
                 // A segment the device has no room for goes out when the driver wakes
                 // the poll task. Nothing signals a freed buffer, so a segment held back
-                // for lack of one is retried soon.
+                // for lack of one, its own or the one of the fragments ahead of it, is
+                // retried soon.
                 if let Err(Blocked::NoBuffer) = socket.dispatch(&mut cx, &mut clock, crate::tcp::transmit) {
                     clock.after(POOL_RETRY_DELAY);
                 }
@@ -1155,7 +1180,7 @@ impl<'d> Stack<'d> {
         #[cfg(all(feature = "async", feature = "udp"))]
         for (_, socket) in self.sockets.udp.iter_mut() {
             if let Some(iface) = socket.tx_blocked_on
-                && self.ifaces.get_mut(iface.index()).can_transmit_new_packet()
+                && self.ifaces.get_mut(iface.index()).can_transmit_new_packet().is_ok()
             {
                 socket.tx_blocked_on = None;
                 socket.tx_waker.wake();
@@ -1164,7 +1189,7 @@ impl<'d> Stack<'d> {
         #[cfg(all(feature = "async", feature = "_raw"))]
         for (_, socket) in self.sockets.raw.iter_mut() {
             if let Some(iface) = socket.tx_blocked_on
-                && self.ifaces.get_mut(iface.index()).can_transmit_new_packet()
+                && self.ifaces.get_mut(iface.index()).can_transmit_new_packet().is_ok()
             {
                 socket.tx_blocked_on = None;
                 socket.tx_waker.wake();
@@ -2341,24 +2366,33 @@ impl StackInner {
     pub(crate) fn fill_neighbor(&mut self, iface: &mut IfaceState<'_>, addr: IpAddr, hardware_addr: HardwareAddress) {
         let key = (iface.handle, addr);
         self.neighbor_cache.fill(key, hardware_addr, self.now);
-        self.flush_pending(iface, &key, hardware_addr);
+        // This runs during ingress. What stays parked is retried later in the same
+        // poll, by `flush_resolved_pending`.
+        let _ = self.flush_pending(iface, &key, hardware_addr);
     }
 
     /// Transmit the packets parked on `key`, now resolved to `hardware_addr`, in
-    /// FIFO order, for as long as the device has room. The rest stay parked, and
-    /// `flush_resolved_pending` retries them on the next `poll`.
+    /// FIFO order, for as long as the interface takes them. The rest stay parked,
+    /// `flush_resolved_pending` retries them on the next `poll`, and the error
+    /// says what they wait for.
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
-    fn flush_pending(&mut self, iface: &mut IfaceState<'_>, key: &NeighborKey, hardware_addr: HardwareAddress) {
+    fn flush_pending(
+        &mut self,
+        iface: &mut IfaceState<'_>,
+        key: &NeighborKey,
+        hardware_addr: HardwareAddress,
+    ) -> Result<(), Blocked> {
         while self.pending.has_matching(key) {
-            if !iface.can_transmit_new_packet() {
-                trace!("neighbor: device has no room, {} stays parked", key.1);
-                return;
+            if let Err(blocked) = iface.can_transmit_new_packet() {
+                trace!("neighbor: interface has no room, {} stays parked", key.1);
+                return Err(blocked);
             }
             // NOTE(unwrap): checked by `has_matching` above.
             let packet = unwrap!(self.pending.pop_matching(key));
             trace!("neighbor: {} resolved, flushing queued packet", key.1);
             self.transmit_link(iface, hardware_addr, packet.buf, packet.key.1);
         }
+        Ok(())
     }
 
     /// Hand an IP packet whose next hop resolved to `hardware_addr` to the
@@ -2392,19 +2426,16 @@ impl StackInner {
     }
 
     /// Retry the packets parked on this interface whose neighbor is resolved:
-    /// they were left parked because the device had no room when the
-    /// resolution came in.
+    /// they were left parked because the interface took no new packet when the
+    /// resolution came in. The error says what they wait for.
     #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
-    pub(crate) fn flush_resolved_pending(&mut self, iface: &mut IfaceState<'_>) {
+    pub(crate) fn flush_resolved_pending(&mut self, iface: &mut IfaceState<'_>) -> Result<(), Blocked> {
         let mut cursor = 0;
         while let Some((index, key)) = self.pending.next_on(iface.handle, cursor) {
             match self.neighbor_cache.lookup(&key, self.now) {
                 NeighborAnswer::Found(hardware_addr) => {
-                    self.flush_pending(iface, &key, hardware_addr);
-                    if self.pending.has_matching(&key) {
-                        // Out of room. Everything else waits too.
-                        return;
-                    }
+                    // Out of room. Everything else waits too.
+                    self.flush_pending(iface, &key, hardware_addr)?;
                     // Every packet on `key` is gone, so what came after the one
                     // at `index` is at `index` now.
                     cursor = index;
@@ -2412,6 +2443,7 @@ impl StackInner {
                 _ => cursor = index + 1,
             }
         }
+        Ok(())
     }
 
     /// Look up the destination hardware address for an egress packet, sending a

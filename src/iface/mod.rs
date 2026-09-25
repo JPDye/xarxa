@@ -23,6 +23,14 @@ use crate::driver::{Capabilities, ChecksumCapabilities, Driver, LinkState};
 use crate::error::Full;
 #[cfg(any(feature = "ipv4-fragmentation", feature = "sixlowpan-fragmentation"))]
 use crate::fragmentation::Fragmenter;
+#[cfg(any(
+    feature = "udp",
+    feature = "tcp",
+    feature = "_raw",
+    feature = "medium-ethernet",
+    feature = "medium-ieee802154"
+))]
+use crate::stack::Blocked;
 #[cfg(feature = "packetmeta-timestamp")]
 use crate::stack::TxTimestampQueue;
 use crate::stack::{Stack, StackInner};
@@ -754,10 +762,14 @@ impl IfaceState<'_> {
 
     /// Whether a new packet can be handed to the interface right now.
     ///
-    /// Unlike [`can_transmit`](Self::can_transmit), this is `false` while the
+    /// Unlike [`can_transmit`](Self::can_transmit), this refuses while the
     /// fragments of a packet are still going out: they have first claim on the
     /// device, and a new packet would take their room, or need the fragmenter
-    /// itself.
+    /// itself. The new packet then waits for what the fragments wait for. They
+    /// only stop for a full device or an empty pool, so with room in the device
+    /// it is the pool, and whoever holds the packet back has to retry on its own.
+    /// The device is asked first either way, so a full one wakes the poll task
+    /// once it has room.
     #[cfg(any(
         feature = "udp",
         feature = "tcp",
@@ -765,12 +777,15 @@ impl IfaceState<'_> {
         feature = "medium-ethernet",
         feature = "medium-ieee802154"
     ))]
-    pub(crate) fn can_transmit_new_packet(&mut self) -> bool {
+    pub(crate) fn can_transmit_new_packet(&mut self) -> Result<(), Blocked> {
+        if !self.can_transmit() {
+            return Err(Blocked::DeviceBusy);
+        }
         #[cfg(any(feature = "ipv4-fragmentation", feature = "sixlowpan-fragmentation"))]
         if !self.fragmenter.is_empty() {
-            return false;
+            return Err(Blocked::NoBuffer);
         }
-        self.can_transmit()
+        Ok(())
     }
 
     /// The assigned addresses, without their origin.

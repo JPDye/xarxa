@@ -886,7 +886,7 @@ impl UdpSocket<'_, '_> {
         };
         let headroom = LINK_HEADER_LEN + ip_header_len + UDP_HEADER_LEN;
 
-        if !self.tx.can_transmit(route.iface) {
+        if self.tx.can_transmit(route.iface).is_err() {
             // `Stack::poll` wakes the socket once the interface has room.
             #[cfg(feature = "async")]
             {
