@@ -76,6 +76,14 @@ impl State {
         }
     }
 
+    pub(crate) fn rejoin(&mut self) {
+        for (_, state) in &mut self.groups {
+            if *state == GroupState::Joined {
+                *state = GroupState::Joining;
+            }
+        }
+    }
+
     pub(crate) fn has_multicast_group(&self, addr: impl Into<IpAddr>) -> bool {
         // Return false if we don't have the multicast group,
         // or we're leaving it.
@@ -257,13 +265,18 @@ impl IfaceState<'_> {
     /// - Depending on `igmp_report_state` and the therein contained
     ///   timeouts, send IGMP membership reports.
     pub(crate) fn multicast_egress(&mut self, inner: &mut StackInner, clock: &mut Clock) {
-        // Process multicast joins.
-        while let Some(&(addr, _)) = self
-            .multicast
-            .groups
-            .iter()
-            .find(|&&(_, state)| state == GroupState::Joining)
-        {
+        // IPv4 reports need an address. Keep joins pending across DHCP restart.
+        #[cfg(feature = "ipv4")]
+        let has_ipv4_addr = self.ipv4_addr().is_some();
+        while let Some(&(addr, _)) = self.multicast.groups.iter().find(|&&(addr, state)| {
+            state == GroupState::Joining
+                && match addr {
+                    #[cfg(feature = "ipv4")]
+                    IpAddr::V4(_) => has_ipv4_addr,
+                    #[cfg(feature = "ipv6")]
+                    IpAddr::V6(_) => true,
+                }
+        }) {
             match addr {
                 #[cfg(feature = "ipv4")]
                 IpAddr::V4(addr) => {
@@ -273,8 +286,9 @@ impl IfaceState<'_> {
                 }
                 #[cfg(feature = "ipv6")]
                 IpAddr::V6(addr) => {
+                    // An empty EXCLUDE list accepts every source; empty INCLUDE leaves.
                     if let Some(pkt) =
-                        self.mldv2_report_packet(core::iter::once((MldRecordType::ChangeToInclude, addr)))
+                        self.mldv2_report_packet(core::iter::once((MldRecordType::ChangeToExclude, addr)))
                     {
                         self.dispatch_ip(inner, pkt);
                     }
@@ -302,7 +316,7 @@ impl IfaceState<'_> {
                 #[cfg(feature = "ipv6")]
                 IpAddr::V6(addr) => {
                     if let Some(pkt) =
-                        self.mldv2_report_packet(core::iter::once((MldRecordType::ChangeToExclude, addr)))
+                        self.mldv2_report_packet(core::iter::once((MldRecordType::ChangeToInclude, addr)))
                     {
                         self.dispatch_ip(inner, pkt);
                     }
@@ -685,7 +699,7 @@ mod test {
     use crate::iface::IfaceHandle;
     use crate::iface::Medium;
     use crate::stack::Stack;
-    use crate::test_device::{Queue, Sent, TestDevice};
+    use crate::test_device::{Link, Queue, Sent, TestDevice};
 
     const OUR_HW: EthernetAddress = EthernetAddress([0x02, 0, 0, 0, 0, 0x01]);
     const REMOTE_HW: EthernetAddress = EthernetAddress([0x52, 0x54, 0x00, 0x00, 0x00, 0x00]);
@@ -698,14 +712,14 @@ mod test {
     /// A stack with one interface of the given medium, owning [`OUR_V4`]/24 and
     /// [`OUR_LL`]/64 (plus, on Ethernet, the automatic link-local address, whose
     /// solicited-node group is the same as [`OUR_LL`]'s).
-    fn test_stack(medium: Medium) -> (Stack<'static>, Queue, Sent) {
+    fn test_stack(medium: Medium) -> (Stack<'static>, Queue, Sent, Link) {
         test_stack_with_checksum(medium, ChecksumCapabilities::default())
     }
 
     /// [`test_stack`], with a device that claims to handle the given checksums itself.
-    fn test_stack_with_checksum(medium: Medium, checksum: ChecksumCapabilities) -> (Stack<'static>, Queue, Sent) {
+    fn test_stack_with_checksum(medium: Medium, checksum: ChecksumCapabilities) -> (Stack<'static>, Queue, Sent, Link) {
         let driver = TestDevice::new(medium).with_checksum(checksum);
-        let (rx, tx) = (driver.rx.clone(), driver.tx.clone());
+        let (rx, tx, link) = (driver.rx.clone(), driver.tx.clone(), driver.link.clone());
         let mut stack = Stack::new(0x1234_5678_dead_beef);
         let handle = driver.install(
             &mut stack,
@@ -721,7 +735,7 @@ mod test {
             .iface(handle)
             .set_ip_addrs([IpCidr::new(OUR_V4.into(), 24), IpCidr::new(OUR_LL.into(), 64)])
             .unwrap();
-        (stack, rx, tx)
+        (stack, rx, tx, link)
     }
 
     /// The IP packets transmitted since the last call, link-layer header stripped.
@@ -900,11 +914,39 @@ mod test {
     }
 
     #[test]
+    fn test_ipv4_membership_report_after_link_recovery() {
+        let medium = Medium::Ethernet;
+        let (mut stack, _rx, tx, link) = test_stack(medium);
+        let group = Ipv4Addr::new(224, 0, 0, 22);
+        let report = [(OUR_V4, group, 1, IgmpMessage::MembershipReportV2, group)];
+        stack.iface(IFACE).join_multicast_group(group).unwrap();
+        stack.poll(Instant::ZERO);
+        assert_eq!(recv_igmp(medium, &tx), report);
+
+        link.set(crate::driver::LinkState::Down);
+        stack.poll(Instant::ZERO);
+        link.set(crate::driver::LinkState::Up);
+        stack.poll(Instant::ZERO);
+        assert_eq!(recv_igmp(medium, &tx), report);
+
+        // Reports wait for an IPv4 source when DHCP restarts on link-up.
+        link.set(crate::driver::LinkState::Down);
+        stack.poll(Instant::ZERO);
+        stack.iface(IFACE).remove_ip_addr(OUR_V4);
+        link.set(crate::driver::LinkState::Up);
+        stack.poll(Instant::ZERO);
+        assert!(recv_igmp(medium, &tx).is_empty());
+        stack.iface(IFACE).add_ip_addr(IpCidr::new(OUR_V4.into(), 24)).unwrap();
+        stack.poll(Instant::ZERO);
+        assert_eq!(recv_igmp(medium, &tx), report);
+    }
+
+    #[test]
     fn test_handle_igmp() {
         for medium in [Medium::Ip, Medium::Ethernet] {
             let groups = [Ipv4Addr::new(224, 0, 0, 22), Ipv4Addr::new(224, 0, 0, 56)];
 
-            let (mut stack, rx, tx) = test_stack(medium);
+            let (mut stack, rx, tx, _link) = test_stack(medium);
             stack.poll(Instant::ZERO);
             tx.borrow_mut().clear();
 
@@ -1015,7 +1057,7 @@ mod test {
         for medium in [Medium::Ip, Medium::Ethernet] {
             let groups = [Ipv4Addr::new(224, 0, 0, 22), Ipv4Addr::new(224, 0, 0, 56)];
 
-            let (mut stack, rx, tx) = test_stack(medium);
+            let (mut stack, rx, tx, _link) = test_stack(medium);
             for group in &groups {
                 stack.iface(IFACE).join_multicast_group(*group).unwrap();
             }
@@ -1048,9 +1090,33 @@ mod test {
     }
 
     #[test]
+    fn test_ipv6_membership_report_after_link_recovery() {
+        let medium = Medium::Ethernet;
+        let (mut stack, _rx, tx, link) = test_stack(medium);
+        let group = Ipv6Addr::new(0xff05, 0, 0, 0, 0, 0, 0, 0x00fb);
+        stack.iface(IFACE).join_multicast_group(group).unwrap();
+        stack.poll(Instant::ZERO);
+        recv_mld(medium, &tx);
+
+        link.set(crate::driver::LinkState::Down);
+        stack.poll(Instant::ZERO);
+        link.set(crate::driver::LinkState::Up);
+        stack.poll(Instant::ZERO);
+        assert_eq!(
+            recv_mld(medium, &tx),
+            [OUR_LL.solicited_node(), group].map(|addr| (
+                OUR_LL,
+                IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS,
+                1,
+                vec![(MldRecordType::ChangeToExclude, addr)]
+            ))
+        );
+    }
+
+    #[test]
     fn test_join_ipv6_multicast_group() {
         for medium in [Medium::Ip, Medium::Ethernet] {
-            let (mut stack, _rx, tx) = test_stack(medium);
+            let (mut stack, _rx, tx, _link) = test_stack(medium);
 
             let groups = [
                 Ipv6Addr::new(0xff05, 0, 0, 0, 0, 0, 0, 0x00fb),
@@ -1081,7 +1147,7 @@ mod test {
                         OUR_LL,
                         IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS,
                         1,
-                        vec![(MldRecordType::ChangeToInclude, group_addr)]
+                        vec![(MldRecordType::ChangeToExclude, group_addr)]
                     )
                 );
 
@@ -1095,7 +1161,7 @@ mod test {
                         OUR_LL,
                         IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS,
                         1,
-                        vec![(MldRecordType::ChangeToExclude, group_addr)]
+                        vec![(MldRecordType::ChangeToInclude, group_addr)]
                     )]
                 );
             }
@@ -1105,7 +1171,7 @@ mod test {
     #[test]
     fn test_handle_valid_multicast_query() {
         let medium = Medium::Ethernet;
-        let (mut stack, rx, tx) = test_stack(medium);
+        let (mut stack, rx, tx, _link) = test_stack(medium);
 
         let mut timestamp = Instant::ZERO;
 
@@ -1174,7 +1240,7 @@ mod test {
     #[test]
     fn test_multicast_query_max_resp_code() {
         let medium = Medium::Ethernet;
-        let (mut stack, rx, tx) = test_stack(medium);
+        let (mut stack, rx, tx, _link) = test_stack(medium);
         let mut timestamp = Instant::ZERO;
         stack.poll(timestamp);
         // flush the report from joining the solicited-node group
@@ -1218,7 +1284,7 @@ mod test {
     #[test]
     fn test_solicited_node_groups() {
         let medium = Medium::Ethernet;
-        let (mut stack, _rx, tx) = test_stack(medium);
+        let (mut stack, _rx, tx, _link) = test_stack(medium);
         let solicited_node = OUR_LL.solicited_node();
         assert!(stack.iface(IFACE).has_multicast_group(solicited_node));
 
@@ -1229,7 +1295,7 @@ mod test {
                 OUR_LL,
                 IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS,
                 1,
-                vec![(MldRecordType::ChangeToInclude, solicited_node)]
+                vec![(MldRecordType::ChangeToExclude, solicited_node)]
             )]
         );
 
@@ -1245,7 +1311,7 @@ mod test {
                 OUR_LL,
                 IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS,
                 1,
-                vec![(MldRecordType::ChangeToInclude, new_addr.solicited_node())]
+                vec![(MldRecordType::ChangeToExclude, new_addr.solicited_node())]
             )]
         );
 
@@ -1258,12 +1324,12 @@ mod test {
                 OUR_LL,
                 IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS,
                 1,
-                vec![(MldRecordType::ChangeToExclude, new_addr.solicited_node())]
+                vec![(MldRecordType::ChangeToInclude, new_addr.solicited_node())]
             )]
         );
 
         // Not on IP interfaces: there is no link to report on.
-        let (mut stack, _rx, tx) = test_stack(Medium::Ip);
+        let (mut stack, _rx, tx, _link) = test_stack(Medium::Ip);
         stack.poll(Instant::ZERO);
         assert!(recv_mld(Medium::Ip, &tx).is_empty());
     }
@@ -1273,7 +1339,7 @@ mod test {
     #[cfg(feature = "udp")]
     fn test_multicast_ingress() {
         let medium = Medium::Ip;
-        let (mut stack, rx, _tx) = test_stack(medium);
+        let (mut stack, rx, _tx, _link) = test_stack(medium);
         let group = Ipv4Addr::new(224, 0, 0, 251);
         let handle = stack.add_udp_socket().unwrap();
         stack
@@ -1349,7 +1415,7 @@ mod test {
         let mut caps = ChecksumCapabilities::default();
         caps.ipv4 = ChecksumOffload::BOTH;
         caps.icmpv6 = ChecksumOffload::BOTH;
-        let (mut stack, _rx, tx) = test_stack_with_checksum(medium, caps);
+        let (mut stack, _rx, tx, _link) = test_stack_with_checksum(medium, caps);
         stack.poll(Instant::ZERO);
         tx.borrow_mut().clear();
 
