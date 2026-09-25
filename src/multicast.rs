@@ -273,8 +273,9 @@ impl IfaceState<'_> {
                 }
                 #[cfg(feature = "ipv6")]
                 IpAddr::V6(addr) => {
+                    // An empty EXCLUDE list accepts every source; empty INCLUDE leaves.
                     if let Some(pkt) =
-                        self.mldv2_report_packet(core::iter::once((MldRecordType::ChangeToInclude, addr)))
+                        self.mldv2_report_packet(core::iter::once((MldRecordType::ChangeToExclude, addr)))
                     {
                         self.dispatch_ip(inner, pkt);
                     }
@@ -302,7 +303,7 @@ impl IfaceState<'_> {
                 #[cfg(feature = "ipv6")]
                 IpAddr::V6(addr) => {
                     if let Some(pkt) =
-                        self.mldv2_report_packet(core::iter::once((MldRecordType::ChangeToExclude, addr)))
+                        self.mldv2_report_packet(core::iter::once((MldRecordType::ChangeToInclude, addr)))
                     {
                         self.dispatch_ip(inner, pkt);
                     }
@@ -1081,7 +1082,7 @@ mod test {
                         OUR_LL,
                         IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS,
                         1,
-                        vec![(MldRecordType::ChangeToInclude, group_addr)]
+                        vec![(MldRecordType::ChangeToExclude, group_addr)]
                     )
                 );
 
@@ -1095,7 +1096,7 @@ mod test {
                         OUR_LL,
                         IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS,
                         1,
-                        vec![(MldRecordType::ChangeToExclude, group_addr)]
+                        vec![(MldRecordType::ChangeToInclude, group_addr)]
                     )]
                 );
             }
@@ -1229,7 +1230,7 @@ mod test {
                 OUR_LL,
                 IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS,
                 1,
-                vec![(MldRecordType::ChangeToInclude, solicited_node)]
+                vec![(MldRecordType::ChangeToExclude, solicited_node)]
             )]
         );
 
@@ -1245,7 +1246,7 @@ mod test {
                 OUR_LL,
                 IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS,
                 1,
-                vec![(MldRecordType::ChangeToInclude, new_addr.solicited_node())]
+                vec![(MldRecordType::ChangeToExclude, new_addr.solicited_node())]
             )]
         );
 
@@ -1258,7 +1259,7 @@ mod test {
                 OUR_LL,
                 IPV6_LINK_LOCAL_ALL_MLDV2_ROUTERS,
                 1,
-                vec![(MldRecordType::ChangeToExclude, new_addr.solicited_node())]
+                vec![(MldRecordType::ChangeToInclude, new_addr.solicited_node())]
             )]
         );
 
