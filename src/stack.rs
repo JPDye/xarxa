@@ -1061,16 +1061,15 @@ impl<'d> Stack<'d> {
             inner.fragment_egress(iface);
 
             // Spot the link state edges: wake whoever waits on the interface, and on the
-            // way back up re-run both configuration protocols, since a link coming back
-            // can mean a different network and what was learned before it dropped may
-            // not hold there.
+            // way back up restart configuration and report multicast memberships.
+            // The link may have moved to a different network.
             {
                 let link_state = iface.driver.link_state();
                 if link_state != iface.last_link_state {
                     iface.last_link_state = link_state;
                     #[cfg(feature = "async")]
                     iface.waker.wake();
-                    #[cfg(any(feature = "dhcpv4", feature = "slaac"))]
+                    #[cfg(any(feature = "dhcpv4", feature = "slaac", feature = "multicast"))]
                     if link_state == crate::driver::LinkState::Up {
                         #[cfg(feature = "dhcpv4")]
                         iface.dhcpv4_reset(&mut self.inner);
@@ -1078,6 +1077,8 @@ impl<'d> Stack<'d> {
                         if let Some(slaac) = iface.slaac.as_mut() {
                             slaac.restart();
                         }
+                        #[cfg(feature = "multicast")]
+                        iface.multicast.rejoin();
                     }
                 }
             }
@@ -3556,6 +3557,9 @@ pub(crate) mod test {
         tx.borrow_mut().clear();
         link.set(crate::driver::LinkState::Up);
         stack.poll(Instant::from_secs(at + 1));
+        tx.borrow_mut().retain_mut(|frame| {
+            EthernetFrame::new_unchecked(frame).dst_addr() == IPV6_LINK_LOCAL_ALL_ROUTERS.multicast_ethernet_addr()
+        });
     }
 
     /// RFC 4861 section 6.3.7 stops solicitation once a router answers, but only "until the
@@ -3619,6 +3623,9 @@ pub(crate) mod test {
         for at in [20, 24, 28, 32] {
             stack.poll(Instant::from_secs(at));
         }
+        tx.borrow_mut().retain_mut(|frame| {
+            EthernetFrame::new_unchecked(frame).dst_addr() == IPV6_LINK_LOCAL_ALL_ROUTERS.multicast_ethernet_addr()
+        });
         assert_eq!(tx.borrow().len(), 3, "the full budget survived the outage");
         let frame = tx.borrow()[0].clone();
         let (msg_type, _, _, _) = parse_icmpv6_reply(
@@ -3646,6 +3653,9 @@ pub(crate) mod test {
         // `RTR_SOLICITATION_INTERVAL` later.
         link.set(crate::driver::LinkState::Up);
         assert_eq!(stack.poll(Instant::from_secs(2)), Instant::from_secs(6));
+        tx.borrow_mut().retain_mut(|frame| {
+            EthernetFrame::new_unchecked(frame).dst_addr() == IPV6_LINK_LOCAL_ALL_ROUTERS.multicast_ethernet_addr()
+        });
         assert_eq!(tx.borrow().len(), 1);
     }
 
@@ -3715,6 +3725,9 @@ pub(crate) mod test {
         stack.poll(Instant::from_secs(32));
         link.set(crate::driver::LinkState::Up);
         stack.poll(Instant::from_secs(33));
+        tx.borrow_mut().retain_mut(|frame| {
+            EthernetFrame::new_unchecked(frame).dst_addr() == IPV6_LINK_LOCAL_ALL_ROUTERS.multicast_ethernet_addr()
+        });
         assert_eq!(tx.borrow().len(), 2, "each link-up sends a fresh solicitation");
 
         // The remaining budget is spent on the retry timer as usual.

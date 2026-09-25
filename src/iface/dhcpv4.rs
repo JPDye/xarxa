@@ -1364,6 +1364,8 @@ mod test {
         stack.poll(at(3));
         link.set(LinkState::Up);
         stack.poll(at(4));
+        tx.borrow_mut()
+            .retain_mut(|frame| EthernetFrame::new_unchecked(frame).ethertype() == EthernetProtocol::Ipv4);
 
         assert!(
             stack.iface(IFACE).dhcpv4_lease().is_none(),
@@ -1384,6 +1386,8 @@ mod test {
         stack.poll(at(3));
         link.set(LinkState::Up);
         stack.poll(at(4));
+        tx.borrow_mut()
+            .retain_mut(|frame| EthernetFrame::new_unchecked(frame).ethertype() == EthernetProtocol::Ipv4);
         let after_first = tx.borrow().len();
         let mut sent = parse_sent(tx.borrow().last().unwrap());
         assert_eq!(message_type(&mut sent), DhcpMessageType::Discover);
@@ -1392,6 +1396,8 @@ mod test {
         stack.poll(at(5));
         link.set(LinkState::Up);
         stack.poll(at(6));
+        tx.borrow_mut()
+            .retain_mut(|frame| EthernetFrame::new_unchecked(frame).ethertype() == EthernetProtocol::Ipv4);
         assert_eq!(
             tx.borrow().len(),
             after_first + 1,
