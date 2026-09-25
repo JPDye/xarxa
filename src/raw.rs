@@ -101,9 +101,14 @@ pub enum SendError {
     Unaddressable,
     /// The packet does not fit in a packet buffer.
     BufferFull,
-    /// No packet buffer is free. Wait for one to be freed, then retry.
+    /// No packet buffer is free.
+    ///
+    /// Retry later. Note the socket's send waker is **not** woken when a buffer is freed.
     NoBuffer,
     /// The interface the packet would go out of has no room for it right now.
+    ///
+    /// Retry once it has room. With the `async` feature, the socket's send
+    /// waker is woken when room becomes available.
     DeviceBusy,
     /// The packet fails basic validation (too short for an Ethernet header in
     /// Ethernet mode, malformed IP header in IP mode), or does not match the
@@ -161,16 +166,14 @@ pub(crate) struct RawSocketState {
     #[cfg(feature = "async")]
     rx_waker: WakerRegistration,
     #[cfg(feature = "async")]
-    tx_waker: WakerRegistration,
+    pub(crate) tx_waker: WakerRegistration,
+    /// The interface the last send found busy. `Stack::poll` wakes `tx_waker` once
+    /// it has room.
+    #[cfg(feature = "async")]
+    pub(crate) tx_blocked_on: Option<IfaceHandle>,
 }
 
 impl RawSocketState {
-    /// Wake the task waiting to send, if any.
-    #[cfg(feature = "async")]
-    pub(crate) fn wake_tx(&mut self) {
-        self.tx_waker.wake();
-    }
-
     /// Create an unbound raw socket.
     pub(crate) fn new() -> RawSocketState {
         RawSocketState {
@@ -181,6 +184,8 @@ impl RawSocketState {
             rx_waker: WakerRegistration::new(),
             #[cfg(feature = "async")]
             tx_waker: WakerRegistration::new(),
+            #[cfg(feature = "async")]
+            tx_blocked_on: None,
         }
     }
 
@@ -319,6 +324,7 @@ impl RawSocket<'_, '_> {
         // Wake the tasks waiting, so they can notice the socket is closed.
         #[cfg(feature = "async")]
         {
+            self.state.tx_blocked_on = None;
             self.state.rx_waker.wake();
             self.state.tx_waker.wake();
         }
@@ -351,7 +357,12 @@ impl RawSocket<'_, '_> {
     /// Register a waker for send operations.
     ///
     /// The waker is woken on state changes that might affect the return value of
-    /// `send` calls, such as the socket being bound or closed.
+    /// `send` calls, such as:
+    /// - the socket is bound or closed.
+    /// - A send failed with [`SendError::DeviceBusy`] and the driver becomes no longer busy.
+    ///
+    /// It is not woken when a packet buffer is freed after
+    /// [`SendError::NoBuffer`]. Retry that on your own.
     ///
     /// Notes:
     ///
@@ -531,7 +542,11 @@ impl RawSocket<'_, '_> {
                     None => self.tx.first_ethernet_iface().ok_or(SendError::Unaddressable)?,
                 };
                 if !self.tx.can_transmit(iface) {
-                    self.tx.inner.set_tx_starved();
+                    // `Stack::poll` wakes the socket once the interface has room.
+                    #[cfg(feature = "async")]
+                    {
+                        self.state.tx_blocked_on = Some(iface);
+                    }
                     return Err(SendError::DeviceBusy);
                 }
                 Some(iface)
@@ -541,7 +556,6 @@ impl RawSocket<'_, '_> {
         };
 
         let Some(mut buf) = PacketBuf::try_new() else {
-            self.tx.inner.set_tx_starved();
             return Err(SendError::NoBuffer);
         };
         if max_size > buf.capacity() - headroom {
@@ -587,7 +601,11 @@ impl RawSocket<'_, '_> {
                     .route(self.state.binding, &dst_addr)
                     .ok_or(SendError::Unaddressable)?;
                 if !self.tx.can_transmit(route.iface) {
-                    self.tx.inner.set_tx_starved();
+                    // `Stack::poll` wakes the socket once the interface has room.
+                    #[cfg(feature = "async")]
+                    {
+                        self.state.tx_blocked_on = Some(route.iface);
+                    }
                     return Err(SendError::DeviceBusy);
                 }
                 trace!("raw: sending {} octets to {}", buf.len(), dst_addr);
