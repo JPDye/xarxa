@@ -18,7 +18,7 @@ use crate::error::IcmpError;
 use crate::error::InvalidHopLimit;
 use crate::iface::IfaceHandle;
 use crate::rand::Rand;
-use crate::stack::{EgressRoute, IfaceBinding, Stack, TxContext, alloc_ephemeral_port};
+use crate::stack::{Blocked, EgressRoute, IfaceBinding, Stack, TxContext, alloc_ephemeral_port};
 use crate::storage::Slab;
 use crate::time::{Clock, Duration, Instant};
 #[cfg(feature = "async")]
@@ -2214,13 +2214,10 @@ pub(crate) fn process_icmp_error(
     }
 }
 
-/// A segment could not be transmitted right now: the egress device has no room,
-/// or the packet pool is empty. The socket is left as if it had never tried, and
-/// [`Stack::poll`](crate::Stack::poll) retries once the device frees a buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Blocked;
-
 /// Transmit a TCP packet. Passed as the closure to [`dispatch`](TcpSocketState::dispatch).
+///
+/// A segment the device has no room for, or no packet buffer is free for, is held
+/// back: `dispatch` stops, and the socket is left as if it had never tried.
 pub(crate) fn transmit(
     cx: &mut TxContext<'_, '_>,
     route: Option<EgressRoute>,
@@ -2235,11 +2232,11 @@ pub(crate) fn transmit(
     };
     if !cx.can_transmit(route.iface) {
         trace!("device has no room for segment to {}, holding it back", dst_addr);
-        return Err(Blocked);
+        return Err(Blocked::DeviceBusy);
     }
     let Some(buf) = build_tcp_packet(&repr, &src_addr, &dst_addr, &cx.checksum_caps(route.iface)) else {
         trace!("no packet buffer for segment to {}, holding it back", dst_addr);
-        return Err(Blocked);
+        return Err(Blocked::NoBuffer);
     };
     cx.transmit_ip(&route, buf, src_addr, dst_addr, IpProtocol::Tcp, hop_limit);
     Ok(())

@@ -91,10 +91,6 @@ pub(crate) struct StackInner {
     pub(crate) routes: Routes,
     #[cfg(feature = "ipv4-fragmentation")]
     pub(crate) ipv4_id: u16,
-    /// Set when a socket send failed for lack of a packet buffer or device room.
-    /// `Stack::poll` wakes the send wakers of every packet socket when set.
-    #[cfg(all(feature = "async", any(feature = "udp", feature = "_raw")))]
-    pub(crate) tx_starved: bool,
     /// The stack's hostname. Empty when unset.
     #[cfg(feature = "hostname")]
     pub(crate) hostname: heapless::String<HOSTNAME_MAX_LEN>,
@@ -132,16 +128,6 @@ impl TxTimestampQueue {
 }
 
 impl StackInner {
-    /// Note that a socket send was held back for lack of a packet buffer or
-    /// device room, so `Stack::poll` wakes the packet sockets' send wakers.
-    #[cfg(any(feature = "udp", feature = "_raw"))]
-    pub(crate) fn set_tx_starved(&mut self) {
-        #[cfg(feature = "async")]
-        {
-            self.tx_starved = true;
-        }
-    }
-
     /// The hostname to send in outgoing DHCP messages. `None` when unset.
     #[cfg(all(feature = "dhcpv4", feature = "hostname"))]
     pub(crate) fn hostname(&self) -> Option<&str> {
@@ -164,6 +150,23 @@ impl StackInner {
         }
     }
 }
+
+/// Why a packet the stack sends by itself (a TCP segment, an IP fragment) could not
+/// go out right now. The packet is held back, not dropped, and retried later.
+#[cfg(any(feature = "tcp", feature = "ipv4-fragmentation", feature = "sixlowpan-fragmentation"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Blocked {
+    /// The egress device has no room. The driver wakes the poll task when it has.
+    DeviceBusy,
+    /// No packet buffer is free. Nothing signals when one is, so [`Stack::poll`]
+    /// asks to be polled again after [`POOL_RETRY_DELAY`].
+    NoBuffer,
+}
+
+/// How soon [`Stack::poll`] asks to be polled again while it holds a packet back
+/// for lack of a packet buffer.
+#[cfg(any(feature = "tcp", feature = "ipv4-fragmentation", feature = "sixlowpan-fragmentation"))]
+pub(crate) const POOL_RETRY_DELAY: crate::time::Duration = crate::time::Duration::from_millis(1);
 
 /// Borrowed stack context for socket egress.
 pub(crate) struct TxContext<'a, 'd> {
@@ -518,8 +521,6 @@ impl<'d> Stack<'d> {
                 routes: Routes::new(),
                 #[cfg(feature = "ipv4-fragmentation")]
                 ipv4_id,
-                #[cfg(all(feature = "async", any(feature = "udp", feature = "_raw")))]
-                tx_starved: false,
                 #[cfg(feature = "hostname")]
                 hostname: heapless::String::new(),
             },
@@ -733,6 +734,22 @@ impl<'d> Stack<'d> {
             self.inner.pending.purge_iface(handle);
         }
         self.inner.routes.purge_iface(handle);
+        // Sockets waiting for room on the interface would wait forever. Their retry
+        // routes again.
+        #[cfg(all(feature = "async", feature = "udp"))]
+        for (_, socket) in self.sockets.udp.iter_mut() {
+            if socket.tx_blocked_on == Some(handle) {
+                socket.tx_blocked_on = None;
+                socket.tx_waker.wake();
+            }
+        }
+        #[cfg(all(feature = "async", feature = "_raw"))]
+        for (_, socket) in self.sockets.raw.iter_mut() {
+            if socket.tx_blocked_on == Some(handle) {
+                socket.tx_blocked_on = None;
+                socket.tx_waker.wake();
+            }
+        }
     }
 
     /// Access the neighbor cache.
@@ -1015,7 +1032,16 @@ impl<'d> Stack<'d> {
     /// Special cases:
     /// - If it's in the past by the time you check, `poll` should be called again immediately.
     /// - If no timer is pending, [`Instant::MAX`] is returned. No need to call `poll` on a timer, only after
-    ///   a packet is received or an operation is done on the Stack, a socket or an interface.
+    ///   a packet is received, a device has room to transmit again after it had none, or an
+    ///   operation is done on the Stack, a socket or an interface.
+    #[cfg_attr(
+        feature = "async",
+        doc = "",
+        doc = "With the `async` feature, register the waker of the task that calls `poll` with every",
+        doc = "driver before each call, with [`Driver::register_waker`](crate::driver::Driver::register_waker).",
+        doc = "A driver wakes it when a packet arrives, when it has room to transmit again, and when its",
+        doc = "link state changes. `poll` then wakes the UDP and raw sockets that were waiting for that room."
+    )]
     pub fn poll(&mut self, timestamp: Instant) -> Instant {
         self.inner.now = timestamp;
 
@@ -1057,8 +1083,10 @@ impl<'d> Stack<'d> {
             #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
             inner.flush_resolved_pending(iface);
 
+            // Fragments go out before anything else the poll sends on the interface.
+            // Those held back for lack of a buffer are retried after TCP, below.
             #[cfg(any(feature = "ipv4-fragmentation", feature = "sixlowpan-fragmentation"))]
-            inner.fragment_egress(iface);
+            let _ = inner.fragment_egress(iface);
 
             // Spot the link state edges: wake whoever waits on the interface, and on the
             // way back up restart configuration and report multicast memberships.
@@ -1103,21 +1131,43 @@ impl<'d> Stack<'d> {
                 ifaces: &mut self.ifaces,
             };
             for (_, socket) in self.sockets.tcp.iter_mut() {
-                let _ = socket.dispatch(&mut cx, &mut clock, crate::tcp::transmit);
+                // A segment the device has no room for goes out when the driver wakes
+                // the poll task. Nothing signals a freed buffer, so a segment held back
+                // for lack of one is retried soon.
+                if let Err(Blocked::NoBuffer) = socket.dispatch(&mut cx, &mut clock, crate::tcp::transmit) {
+                    clock.after(POOL_RETRY_DELAY);
+                }
             }
         }
 
-        // Sends held back for lack of a buffer or device room since the last poll
-        // may succeed now: wake their tasks so they retry.
-        #[cfg(all(feature = "async", any(feature = "udp", feature = "_raw")))]
-        if core::mem::take(&mut self.inner.tx_starved) {
-            #[cfg(feature = "udp")]
-            for (_, socket) in self.sockets.udp.iter_mut() {
-                socket.wake_tx();
+        // Send what the fragmenters still hold, TCP's segments among them (6LoWPAN
+        // fragments those), and retry soon what is held back for lack of a buffer.
+        #[cfg(any(feature = "ipv4-fragmentation", feature = "sixlowpan-fragmentation"))]
+        for (_, iface) in self.ifaces.iter_mut() {
+            if let Err(Blocked::NoBuffer) = self.inner.fragment_egress(iface) {
+                clock.after(POOL_RETRY_DELAY);
             }
-            #[cfg(feature = "_raw")]
-            for (_, socket) in self.sockets.raw.iter_mut() {
-                socket.wake_tx();
+        }
+
+        // Wake the sockets whose last send found the device busy, if it has room now.
+        // This comes after the poll's own egress above, which has first claim on the
+        // room. A device still full was just asked again, which arms its wakeup.
+        #[cfg(all(feature = "async", feature = "udp"))]
+        for (_, socket) in self.sockets.udp.iter_mut() {
+            if let Some(iface) = socket.tx_blocked_on
+                && self.ifaces.get_mut(iface.index()).can_transmit_new_packet()
+            {
+                socket.tx_blocked_on = None;
+                socket.tx_waker.wake();
+            }
+        }
+        #[cfg(all(feature = "async", feature = "_raw"))]
+        for (_, socket) in self.sockets.raw.iter_mut() {
+            if let Some(iface) = socket.tx_blocked_on
+                && self.ifaces.get_mut(iface.index()).can_transmit_new_packet()
+            {
+                socket.tx_blocked_on = None;
+                socket.tx_waker.wake();
             }
         }
 
@@ -4487,10 +4537,6 @@ pub(crate) mod test {
     #[test]
     #[cfg(all(feature = "packetmeta-timestamp", feature = "async"))]
     fn test_tx_timestamp_queue() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::task::{Wake, Waker};
-
         use crate::config::TX_TIMESTAMP_QUEUE_COUNT;
         use crate::driver::{Timestamp, TxTimestamp};
 
@@ -4498,14 +4544,6 @@ pub(crate) mod test {
         const STAMP_B: Timestamp = Timestamp::from_seconds_and_nanos(2, 0);
         const OTHER_V4: Ipv4Addr = Ipv4Addr::new(192, 168, 2, 1);
         const OTHER_REMOTE_V4: Ipv4Addr = Ipv4Addr::new(192, 168, 2, 2);
-
-        #[derive(Default)]
-        struct WakeCount(AtomicUsize);
-        impl Wake for WakeCount {
-            fn wake(self: Arc<Self>) {
-                self.0.fetch_add(1, Ordering::Relaxed);
-            }
-        }
 
         let mut stack = Stack::new(1);
         let iface_a = TestDevice::new(Medium::Ip)
@@ -4536,12 +4574,12 @@ pub(crate) mod test {
         };
 
         // Both interfaces feed the one queue, and the consumer is woken once per poll.
-        let wakes = Arc::new(WakeCount::default());
-        stack.register_tx_timestamp_waker(&Waker::from(wakes.clone()));
+        let (wakes, waker) = WakeCount::new();
+        stack.register_tx_timestamp_waker(&waker);
         send(&mut stack, REMOTE_V4, 1);
         send(&mut stack, OTHER_REMOTE_V4, 2);
         stack.poll(Instant::from_secs(0));
-        assert_eq!(wakes.0.swap(0, Ordering::Relaxed), 1);
+        assert_eq!(wakes.take(), 1);
         assert_eq!(
             stack.poll_tx_timestamp(),
             Some(TxTimestamp {
@@ -5325,6 +5363,211 @@ pub(crate) mod test {
         assert_eq!(stack.poll(now), Instant::MAX);
         assert_eq!(tx.borrow().len(), 1);
         assert_eq!(stack.tcp_socket(handle).remote_addr(), None);
+    }
+
+    /// A waker that counts how often it is woken.
+    #[cfg(feature = "async")]
+    #[derive(Default)]
+    struct WakeCount(std::sync::atomic::AtomicUsize);
+
+    #[cfg(feature = "async")]
+    impl std::task::Wake for WakeCount {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(feature = "async")]
+    impl WakeCount {
+        /// A counter, and a waker that counts into it.
+        fn new() -> (std::sync::Arc<Self>, core::task::Waker) {
+            let count = std::sync::Arc::new(Self::default());
+            let waker = core::task::Waker::from(count.clone());
+            (count, waker)
+        }
+
+        /// The wakes since the last call.
+        fn take(&self) -> usize {
+            self.0.swap(0, std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    /// A send the device has no room for wakes its socket's send waker once the
+    /// device has room, from the poll that finds it. Not before, and only once.
+    #[test]
+    #[cfg(all(
+        feature = "async",
+        feature = "raw-ethernet",
+        feature = "ipv4",
+        feature = "udp",
+        feature = "raw-ip"
+    ))]
+    fn test_device_full_wakes_senders_when_room() {
+        let (mut stack, rx, tx, room) = test_stack_with_room(Medium::Ethernet);
+        let remote_hw = EthernetAddress([0x02, 0, 0, 0, 0, 0x02]);
+        inject(&mut stack, &rx, arp_request_from(remote_hw, REMOTE_V4));
+        tx.borrow_mut().clear();
+
+        let udp = stack.add_udp_socket().unwrap();
+        stack.udp_socket(udp).bind(5555, ListenSocketAddr::UNSPECIFIED).unwrap();
+        let raw = stack.add_raw_socket().unwrap();
+        stack
+            .raw_socket(raw)
+            .bind(RawMode::Ethernet { ethertype: None })
+            .unwrap();
+        let raw_ip = stack.add_raw_socket().unwrap();
+        stack
+            .raw_socket(raw_ip)
+            .bind(RawMode::Ip {
+                version: None,
+                protocol: None,
+            })
+            .unwrap();
+        let mut frame = vec![0; ETHERNET_HEADER_LEN + 4];
+        EthernetFrame::new_unchecked(&mut frame[..]).set_ethertype(EthernetProtocol::Ipv4);
+        let packet = ipv4_packet(OUR_V4, REMOTE_V4, IpProtocol::Udp, &[0; 8]);
+
+        let (counts, wakers): (Vec<_>, Vec<_>) = (0..3).map(|_| WakeCount::new()).unzip();
+        let register = |stack: &mut Stack<'_>| {
+            stack.udp_socket(udp).register_send_waker(&wakers[0]);
+            stack.raw_socket(raw).register_send_waker(&wakers[1]);
+            stack.raw_socket(raw_ip).register_send_waker(&wakers[2]);
+        };
+        let wakes = || counts.iter().map(|count| count.take()).collect::<Vec<_>>();
+
+        room.set(Some(0));
+        assert_eq!(
+            stack.udp_socket(udp).send_slice(b"hi", (REMOTE_V4, 1000)),
+            Err(crate::udp::SendError::DeviceBusy)
+        );
+        assert_eq!(
+            stack.raw_socket(raw).send_slice(&frame),
+            Err(crate::raw::SendError::DeviceBusy)
+        );
+        assert_eq!(
+            stack.raw_socket(raw_ip).send_slice(&packet),
+            Err(crate::raw::SendError::DeviceBusy)
+        );
+        register(&mut stack);
+
+        // Polls while the device is still full wake nobody.
+        stack.poll(Instant::ZERO);
+        stack.poll(Instant::ZERO);
+        assert_eq!(wakes(), [0; 3]);
+
+        // The first poll with room wakes every socket, once. That ends their wait:
+        // a later poll wakes nobody, even with the wakers registered again.
+        room.set(Some(3));
+        stack.poll(Instant::ZERO);
+        assert_eq!(wakes(), [1; 3]);
+        register(&mut stack);
+        stack.poll(Instant::ZERO);
+        assert_eq!(wakes(), [0; 3]);
+
+        // The retries go through.
+        stack.udp_socket(udp).send_slice(b"hi", (REMOTE_V4, 1000)).unwrap();
+        stack.raw_socket(raw).send_slice(&frame).unwrap();
+        stack.raw_socket(raw_ip).send_slice(&packet).unwrap();
+        assert_eq!(tx.borrow().len(), 3);
+    }
+
+    /// A socket waiting for room on one interface is not woken by room on another.
+    #[test]
+    #[cfg(all(feature = "async", feature = "medium-ip", feature = "ipv4", feature = "udp"))]
+    fn test_device_full_wakes_only_senders_waiting_on_it() {
+        let mut stack = Stack::new(0x1234_5678_dead_beef);
+        let mut rooms = Vec::new();
+        for addr in [IpCidr::new(OUR_V4.into(), 24), IpCidr::new(OUR_V4_B.into(), 24)] {
+            let driver = TestDevice::new(Medium::Ip);
+            rooms.push(driver.room.clone());
+            let handle = driver.install(&mut stack, HardwareAddress::Ip);
+            stack.iface(handle).add_ip_addr(addr).unwrap();
+        }
+        let udp = stack.add_udp_socket().unwrap();
+        stack.udp_socket(udp).bind(5555, ListenSocketAddr::UNSPECIFIED).unwrap();
+
+        // The first interface is full.
+        rooms[0].set(Some(0));
+        assert_eq!(
+            stack.udp_socket(udp).send_slice(b"hi", (REMOTE_V4, 1000)),
+            Err(crate::udp::SendError::DeviceBusy)
+        );
+        let (wakes, waker) = WakeCount::new();
+        stack.udp_socket(udp).register_send_waker(&waker);
+
+        // The second one has room, which does nothing for this send.
+        stack.poll(Instant::ZERO);
+        assert_eq!(wakes.take(), 0);
+
+        rooms[0].set(None);
+        stack.poll(Instant::ZERO);
+        assert_eq!(wakes.take(), 1);
+    }
+
+    /// Removing an interface wakes the sockets waiting for room on it, which it
+    /// will never have.
+    #[test]
+    #[cfg(all(feature = "async", feature = "medium-ip", feature = "ipv4", feature = "udp"))]
+    fn test_remove_iface_wakes_senders_waiting_on_it() {
+        let (mut stack, _rx, _tx, room) = test_stack_with_room(Medium::Ip);
+        let udp = stack.add_udp_socket().unwrap();
+        stack.udp_socket(udp).bind(5555, ListenSocketAddr::UNSPECIFIED).unwrap();
+
+        room.set(Some(0));
+        assert_eq!(
+            stack.udp_socket(udp).send_slice(b"hi", (REMOTE_V4, 1000)),
+            Err(crate::udp::SendError::DeviceBusy)
+        );
+        let (wakes, waker) = WakeCount::new();
+        stack.udp_socket(udp).register_send_waker(&waker);
+
+        stack.remove_iface(IfaceHandle::new(0));
+        assert_eq!(wakes.take(), 1);
+
+        // The retry has nowhere to go, and nothing waits on the removed interface.
+        assert_eq!(
+            stack.udp_socket(udp).send_slice(b"hi", (REMOTE_V4, 1000)),
+            Err(crate::udp::SendError::Unaddressable)
+        );
+        stack.poll(Instant::ZERO);
+        assert_eq!(wakes.take(), 0);
+    }
+
+    /// A send held back while the fragments of another packet go out is woken by
+    /// the poll that sends the last one, when the device has room left for it.
+    #[test]
+    #[cfg(all(
+        feature = "async",
+        feature = "medium-ip",
+        feature = "ipv4",
+        feature = "udp",
+        feature = "ipv4-fragmentation"
+    ))]
+    fn test_fragmenter_wakes_held_back_senders() {
+        let (mut stack, _rx, tx, room) = test_stack_with_mtu(Medium::Ip, 600);
+        let udp = stack.add_udp_socket().unwrap();
+        stack.udp_socket(udp).bind(5555, ListenSocketAddr::UNSPECIFIED).unwrap();
+
+        // A datagram of two fragments, and room for the first one only.
+        room.set(Some(1));
+        stack.udp_socket(udp).send_slice(&[0; 800], (REMOTE_V4, 1000)).unwrap();
+        assert_eq!(tx.borrow().len(), 1);
+
+        // The second fragment has first claim on the device, room or not.
+        room.set(Some(2));
+        assert_eq!(
+            stack.udp_socket(udp).send_slice(b"hi", (REMOTE_V4, 1000)),
+            Err(crate::udp::SendError::DeviceBusy)
+        );
+        let (wakes, waker) = WakeCount::new();
+        stack.udp_socket(udp).register_send_waker(&waker);
+
+        // The poll sends it, and the room left over goes to the socket.
+        stack.poll(Instant::ZERO);
+        assert_eq!(tx.borrow().len(), 2);
+        assert_eq!(wakes.take(), 1);
+        stack.udp_socket(udp).send_slice(b"hi", (REMOTE_V4, 1000)).unwrap();
+        assert_eq!(tx.borrow().len(), 3);
     }
 
     #[test]

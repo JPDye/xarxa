@@ -216,15 +216,17 @@ pub trait Driver {
     /// Register a waker.
     ///
     /// The driver must wake it when:
-    /// - a frame has been received, so [`receive`](Self::receive) may return `Some`,
-    /// - there is room to transmit again, after [`can_transmit`](Self::can_transmit) returned `false`,
-    /// - the link state changed, so [`link_state`](Self::link_state) may return something new.
+    /// - a frame has been received, so [`receive`](Self::receive) may return `Some`.
+    /// - there is room to transmit again, after [`can_transmit`](Self::can_transmit)
+    ///   returned `false`.
+    /// - the link state changed, so [`link_state`](Self::link_state) may return
+    ///   something new.
     ///
     /// Only one waker is kept. Registering another replaces it. Wakes are
     /// allowed to be spurious.
     ///
-    /// A registered waker is woken just one. The main loop must re-register it if
-    /// it wants to be woken again.
+    /// A registered waker is woken just once. The main loop must register it
+    /// again if it wants to be woken again.
     ///
     /// # Errors
     /// - `NotSupported`: if the driver cannot wake anything. This is the default
@@ -252,6 +254,9 @@ pub trait Driver {
     /// whether this queue has space to take one more frame.
     ///
     /// If this returns `true`, the next `transmit()` call must not fail.
+    ///
+    /// If this returns `false`, the driver must wake the waker from
+    /// `register_waker` once there is room again.
     ///
     /// In devices where there's no queue so transmit always succeeds, this
     /// should always return `true`.

@@ -112,9 +112,14 @@ pub enum SendError {
     Unaddressable,
     /// The payload does not fit in a packet buffer.
     BufferFull,
-    /// No packet buffer is free. Wait for one to be freed, then retry.
+    /// No packet buffer is free.
+    ///
+    /// Retry later. Note the socket's send waker is **not** woken when a buffer is freed.
     NoBuffer,
     /// The interface the packet would go out of has no room for it right now.
+    ///
+    /// Retry once it has room. With the `async` feature, the socket's send
+    /// waker is woken when room becomes available.
     DeviceBusy,
 }
 
@@ -193,16 +198,14 @@ pub(crate) struct UdpSocketState {
     #[cfg(feature = "async")]
     rx_waker: WakerRegistration,
     #[cfg(feature = "async")]
-    tx_waker: WakerRegistration,
+    pub(crate) tx_waker: WakerRegistration,
+    /// The interface the last send found busy. `Stack::poll` wakes `tx_waker` once
+    /// it has room.
+    #[cfg(feature = "async")]
+    pub(crate) tx_blocked_on: Option<IfaceHandle>,
 }
 
 impl UdpSocketState {
-    /// Wake the task waiting to send, if any.
-    #[cfg(feature = "async")]
-    pub(crate) fn wake_tx(&mut self) {
-        self.tx_waker.wake();
-    }
-
     /// Create an unbound UDP socket.
     pub(crate) fn new() -> UdpSocketState {
         UdpSocketState {
@@ -217,6 +220,8 @@ impl UdpSocketState {
             rx_waker: WakerRegistration::new(),
             #[cfg(feature = "async")]
             tx_waker: WakerRegistration::new(),
+            #[cfg(feature = "async")]
+            tx_blocked_on: None,
         }
     }
 
@@ -600,6 +605,7 @@ impl UdpSocket<'_, '_> {
         // Wake the tasks waiting, so they can notice the socket is closed.
         #[cfg(feature = "async")]
         {
+            state.tx_blocked_on = None;
             state.rx_waker.wake();
             state.tx_waker.wake();
         }
@@ -632,7 +638,12 @@ impl UdpSocket<'_, '_> {
     /// Register a waker for send operations.
     ///
     /// The waker is woken on state changes that might affect the return value of
-    /// `send` calls, such as the socket being bound or closed.
+    /// `send` calls, such as:
+    /// - the socket is bound or closed.
+    /// - A send failed with [`SendError::DeviceBusy`] and the driver becomes no longer busy.
+    ///
+    /// It is not woken when a packet buffer is freed after
+    /// [`SendError::NoBuffer`]. Retry that on your own.
     ///
     /// Notes:
     ///
@@ -876,11 +887,14 @@ impl UdpSocket<'_, '_> {
         let headroom = LINK_HEADER_LEN + ip_header_len + UDP_HEADER_LEN;
 
         if !self.tx.can_transmit(route.iface) {
-            self.tx.inner.set_tx_starved();
+            // `Stack::poll` wakes the socket once the interface has room.
+            #[cfg(feature = "async")]
+            {
+                self.inner_mut().tx_blocked_on = Some(route.iface);
+            }
             return Err(SendError::DeviceBusy);
         }
         let Some(mut buf) = PacketBuf::try_new() else {
-            self.tx.inner.set_tx_starved();
             return Err(SendError::NoBuffer);
         };
         if max_size > buf.capacity() - headroom {

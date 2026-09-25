@@ -11,7 +11,7 @@ use crate::driver::PacketBuf;
 use crate::iface::IfaceState;
 #[cfg(feature = "ipv4-fragmentation")]
 use crate::rand::Rand;
-use crate::stack::StackInner;
+use crate::stack::{Blocked, StackInner};
 use crate::wire::*;
 
 pub(crate) struct Fragmenter {
@@ -133,19 +133,22 @@ impl StackInner {
     ///
     /// An IEEE 802.15.4 interface's fragmenter holds a 6LoWPAN packet, any
     /// other's an IPv4 packet.
-    pub(crate) fn fragment_egress(&mut self, iface: &mut IfaceState<'_>) {
+    ///
+    /// The error says why the rest of the fragments have to wait.
+    pub(crate) fn fragment_egress(&mut self, iface: &mut IfaceState<'_>) -> Result<(), Blocked> {
         match iface.medium() {
             #[cfg(feature = "medium-ieee802154")]
             crate::iface::Medium::Ieee802154 => {
                 #[cfg(feature = "sixlowpan-fragmentation")]
-                self.sixlowpan_egress(iface);
+                self.sixlowpan_egress(iface)?;
             }
             #[allow(unreachable_patterns)]
             _ => {
                 #[cfg(feature = "ipv4-fragmentation")]
-                self.ipv4_egress(iface);
+                self.ipv4_egress(iface)?;
             }
         }
+        Ok(())
     }
 }
 
@@ -214,31 +217,33 @@ impl StackInner {
         frag.buffer = Some(buf);
 
         // Transmit as many fragments as the device takes now. The rest go
-        // out on the next polls.
-        self.ipv4_egress(iface);
+        // out on the next polls, which also schedule the retry if the pool ran out.
+        let _ = self.ipv4_egress(iface);
     }
 
     /// Process fragments that still need to be sent for IPv4 packets.
     ///
     /// Fragments go out while the device has room for them and the pool has
-    /// buffers. The rest wait in the fragmenter for the next poll.
-    pub(crate) fn ipv4_egress(&mut self, iface: &mut IfaceState<'_>) {
+    /// buffers. The rest wait in the fragmenter for the next poll, and the error
+    /// says which of the two ran out.
+    pub(crate) fn ipv4_egress(&mut self, iface: &mut IfaceState<'_>) -> Result<(), Blocked> {
         if iface.fragmenter.is_empty() {
-            return;
+            return Ok(());
         }
 
         while !iface.fragmenter.finished() {
             if !iface.can_transmit() {
                 trace!("fragmenter: device has no room, fragments wait");
-                return;
+                return Err(Blocked::DeviceBusy);
             }
             if !self.dispatch_ipv4_frag(iface) {
-                return;
+                return Err(Blocked::NoBuffer);
             }
         }
 
         // Reset the buffer when we transmitted everything.
         iface.fragmenter.reset();
+        Ok(())
     }
 
     /// Transmit the next fragment of the packet in the interface's fragmenter.

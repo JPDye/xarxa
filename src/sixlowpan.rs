@@ -12,6 +12,8 @@ use crate::driver::PacketBuf;
 use crate::error::{Full, Malformed};
 use crate::iface::{Iface, IfaceHandle, IfaceState};
 use crate::rand::Rand;
+#[cfg(feature = "sixlowpan-fragmentation")]
+use crate::stack::Blocked;
 use crate::stack::{Stack, StackInner};
 use crate::storage::Vec;
 use crate::wire::ip::checksum;
@@ -803,31 +805,33 @@ impl StackInner {
         frag.buffer = Some(buf);
 
         // Transmit as many fragments as the device takes now. The rest go
-        // out on the next polls.
-        self.sixlowpan_egress(iface);
+        // out on the next polls, which also schedule the retry if the pool ran out.
+        let _ = self.sixlowpan_egress(iface);
     }
 
     /// Process fragments that still need to be sent for 6LoWPAN packets.
     ///
     /// Fragments go out while the device has room for them and the pool has
-    /// buffers. The rest wait in the fragmenter for the next poll.
-    pub(crate) fn sixlowpan_egress(&mut self, iface: &mut IfaceState<'_>) {
+    /// buffers. The rest wait in the fragmenter for the next poll, and the error
+    /// says which of the two ran out.
+    pub(crate) fn sixlowpan_egress(&mut self, iface: &mut IfaceState<'_>) -> Result<(), Blocked> {
         if iface.fragmenter.is_empty() {
-            return;
+            return Ok(());
         }
 
         while !iface.fragmenter.finished() {
             if !iface.can_transmit() {
                 trace!("fragmenter: device has no room, fragments wait");
-                return;
+                return Err(Blocked::DeviceBusy);
             }
             if !self.dispatch_ieee802154_frag(iface) {
-                return;
+                return Err(Blocked::NoBuffer);
             }
         }
 
         // Reset the buffer when we transmitted everything.
         iface.fragmenter.reset();
+        Ok(())
     }
 
     /// Transmit the next fragment of the packet in the interface's fragmenter.
