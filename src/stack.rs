@@ -44,7 +44,7 @@ use crate::storage::{MaybeBox, Slab, Vec};
 use crate::tcp::{SocketBuffer, TcpHandle, TcpRepr, TcpSocket, TcpSocketIter, TcpSocketState};
 #[cfg(feature = "tcp-listener")]
 use crate::tcp::{TcpListener, TcpListenerHandle, TcpListenerIter, TcpListenerState};
-use crate::time::Instant;
+use crate::time::{Clock, Instant};
 #[cfg(feature = "udp")]
 use crate::udp::{UdpHandle, UdpSocket, UdpSocketIter, UdpSocketState};
 use crate::wire::*;
@@ -1016,25 +1016,25 @@ impl<'d> Stack<'d> {
     ///
     /// `timestamp` is the current time.
     ///
-    /// Returns a "poll deadline" instant. It is the earliest expiring timer. You should call `poll` at that instant to let it advance timers. Special cases:
-    /// - If it's [`Instant::MIN`] or in the past, `poll` should be called again immediately.
+    /// Returns a "poll deadline" instant. It is the earliest expiring timer, and it is always
+    /// later than `timestamp`. You should call `poll` at that instant to let it advance timers.
+    /// Special cases:
+    /// - If it's in the past by the time you check, `poll` should be called again immediately.
     /// - If no timer is pending, [`Instant::MAX`] is returned. No need to call `poll` on a timer, only after
     ///   a packet is received or an operation is done on the Stack, a socket or an interface.
     pub fn poll(&mut self, timestamp: Instant) -> Instant {
         self.inner.now = timestamp;
+
+        // Everything below that has timers checks them against this clock. The ones
+        // that haven't fired count toward when to poll next.
+        #[allow(unused_mut)]
+        let mut clock = Clock::new(timestamp);
 
         // Collect the transmit timestamps the drivers have ready for us.
         #[cfg(feature = "packetmeta-timestamp")]
         for (_, iface) in self.ifaces.iter_mut() {
             iface.drain_tx_timestamps(&mut self.inner.tx_timestamps);
         }
-
-        // Drop queued packets whose neighbor resolution timed out.
-        #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
-        self.inner.pending.purge_expired(timestamp);
-
-        #[cfg(any(feature = "ipv4-reassembly", feature = "sixlowpan-reassembly"))]
-        self.fragments.assembler.remove_expired(timestamp);
 
         let mut next = 0;
         while let Some(index) = self.ifaces.next_occupied(next) {
@@ -1089,27 +1089,14 @@ impl<'d> Stack<'d> {
             }
 
             #[cfg(feature = "dhcpv4")]
-            self.ifaces.get_mut(index).dhcpv4_dispatch(&mut self.inner);
+            self.ifaces.get_mut(index).dhcpv4_poll(&mut self.inner, &mut clock);
 
             #[cfg(feature = "slaac")]
-            {
-                let iface = self.ifaces.get_mut(index);
-                // A solicitation counts as sent even if the driver refuses the frame, so
-                // don't spend the budget on a down link.
-                if iface.last_link_state == crate::driver::LinkState::Up {
-                    iface.ndisc_rs_egress(&mut self.inner);
-                }
-                if iface.slaac.as_ref().is_some_and(|s| s.sync_required(timestamp)) {
-                    iface.sync_slaac_state(&mut self.inner);
-                }
-            }
+            self.ifaces.get_mut(index).slaac_poll(&mut self.inner, &mut clock);
 
             #[cfg(feature = "multicast")]
-            self.ifaces.get_mut(index).multicast_egress(&mut self.inner);
+            self.ifaces.get_mut(index).multicast_egress(&mut self.inner, &mut clock);
         }
-
-        #[allow(unused_mut)]
-        let mut deadline = Instant::MAX;
 
         // Drive TCP egress: this both acknowledges what ingress just delivered and
         // advances the TCP timers (retransmissions, delayed ACKs, keep-alives,
@@ -1127,7 +1114,7 @@ impl<'d> Stack<'d> {
                     Ok(()) => socket.poll_at(),
                     Err(crate::tcp::Blocked) => socket.poll_at_blocked(),
                 };
-                deadline = deadline.min(socket_deadline);
+                clock.schedule(socket_deadline);
             }
         }
 
@@ -1145,45 +1132,21 @@ impl<'d> Stack<'d> {
             }
         }
 
+        // The neighbor cache, the pending queue and the reassembly buffers get new
+        // entries anywhere in the poll, so they are done last. Every new neighbor
+        // entry is set to retransmit a fixed time from now, and the ones that were
+        // due have been retransmitted, per interface, above.
         #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
         {
-            deadline = deadline.min(self.inner.neighbor_cache.poll_at());
-            deadline = deadline.min(self.inner.pending.poll_at());
+            clock.schedule(self.inner.neighbor_cache.poll_at());
+            // Drop queued packets whose neighbor resolution timed out.
+            self.inner.pending.purge_expired(&mut clock);
         }
 
         #[cfg(any(feature = "ipv4-reassembly", feature = "sixlowpan-reassembly"))]
-        {
-            deadline = deadline.min(self.fragments.assembler.poll_at());
-        }
+        self.fragments.assembler.remove_expired(&mut clock);
 
-        #[cfg(feature = "dhcpv4")]
-        {
-            deadline = self
-                .ifaces
-                .iter()
-                .filter_map(|(_, iface)| iface.dhcpv4.as_ref().map(|client| client.poll_at()))
-                .fold(deadline, Instant::min);
-        }
-
-        #[cfg(feature = "slaac")]
-        {
-            deadline = self
-                .ifaces
-                .iter()
-                .filter_map(|(_, iface)| iface.slaac.as_ref().map(|s| s.poll_at(timestamp)))
-                .fold(deadline, Instant::min);
-        }
-
-        #[cfg(feature = "multicast")]
-        {
-            deadline = self
-                .ifaces
-                .iter()
-                .map(|(_, iface)| iface.multicast.poll_at())
-                .fold(deadline, Instant::min);
-        }
-
-        deadline
+        clock.next()
     }
 }
 
@@ -3670,6 +3633,58 @@ pub(crate) mod test {
         assert_eq!(msg_type, Icmpv6Message::RouterSolicit);
     }
 
+    /// While the link is down, the held-back solicitations don't make `poll` ask
+    /// to be polled again right away.
+    #[test]
+    #[cfg(feature = "slaac")]
+    fn test_slaac_down_link_does_not_busy_poll() {
+        let (mut stack, _rx, tx, link) = test_stack_with_link(Medium::Ethernet);
+        let iface = IfaceHandle::new(0);
+
+        link.set(crate::driver::LinkState::Down);
+        stack.iface(iface).set_slaac(Some(SlaacConfig::default())).unwrap();
+        assert_eq!(stack.poll(Instant::from_secs(1)), Instant::MAX);
+        assert!(tx.borrow().is_empty());
+
+        // Once the link is back, the solicitation goes out, and the next one is due
+        // `RTR_SOLICITATION_INTERVAL` later.
+        link.set(crate::driver::LinkState::Up);
+        assert_eq!(stack.poll(Instant::from_secs(2)), Instant::from_secs(6));
+        assert_eq!(tx.borrow().len(), 1);
+    }
+
+    /// Without a link-local address there is nothing to solicit from. The
+    /// held-back solicitation doesn't make `poll` ask to be polled again right
+    /// away, and it goes out on the first poll after one is added.
+    #[test]
+    #[cfg(feature = "slaac")]
+    fn test_slaac_waits_for_link_local() {
+        let (mut stack, _rx, tx) = test_stack(Medium::Ethernet);
+        let iface = IfaceHandle::new(0);
+
+        assert!(stack.iface(iface).remove_ip_addr(OUR_LINK_LOCAL).is_some());
+        stack.poll(Instant::ZERO);
+        tx.borrow_mut().clear();
+
+        stack.iface(iface).set_slaac(Some(SlaacConfig::default())).unwrap();
+        assert_eq!(stack.poll(Instant::from_secs(1)), Instant::MAX);
+        assert!(tx.borrow().is_empty());
+
+        stack
+            .iface(iface)
+            .add_ip_addr(IpCidr::new(OUR_LINK_LOCAL.into(), 64))
+            .unwrap();
+        assert_eq!(stack.poll(Instant::from_secs(2)), Instant::from_secs(6));
+        assert_eq!(tx.borrow().len(), 1);
+        let frame = tx.borrow()[0].clone();
+        let (msg_type, _, _, _) = parse_icmpv6_reply(
+            &frame[ETHERNET_HEADER_LEN..],
+            OUR_LINK_LOCAL,
+            IPV6_LINK_LOCAL_ALL_ROUTERS,
+        );
+        assert_eq!(msg_type, Icmpv6Message::RouterSolicit);
+    }
+
     /// Every link-up solicits at once, even mid-interval: the link coming back can
     /// mean a new network, and holding the solicitation for the rest of
     /// `RTR_SOLICITATION_INTERVAL` just delays learning it.
@@ -5159,6 +5174,44 @@ pub(crate) mod test {
         assert_eq!(dns.get_query_result(query), Err(GetQueryResultError::Pending));
     }
 
+    /// A DNS server that doesn't answer is given up on when its timeout expires, not
+    /// at the first retransmission after that.
+    #[test]
+    #[cfg(all(feature = "dns", feature = "medium-ip", feature = "ipv4"))]
+    fn test_dns_query_timeout() {
+        use crate::dns::DnsClient;
+        use crate::wire::dns::Type;
+
+        const OTHER_V4: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 3);
+        let (mut stack, _rx, tx) = test_stack(Medium::Ip);
+        let mut dns = DnsClient::new(&mut stack, &[IpAddr::V4(REMOTE_V4), IpAddr::V4(OTHER_V4)]).unwrap();
+        dns.start_query(&mut stack, "example.com", Type::A).unwrap();
+
+        // Poll at every deadline, like a main loop does.
+        let mut sent = Vec::new();
+        let mut now = Instant::ZERO;
+        while now <= Instant::from_secs(10) {
+            let deadline = stack.poll(now).min(dns.poll(&mut stack));
+            for mut packet in tx.borrow_mut().drain(..) {
+                sent.push((now, Ipv4Packet::new_checked(&mut packet[..]).unwrap().dst_addr()));
+            }
+            now = deadline;
+        }
+
+        // The retransmissions to the first server back off, and its 10 s timeout
+        // comes before the next one. The query moves on to the second server then.
+        assert_eq!(
+            sent,
+            [
+                (Instant::from_secs(0), REMOTE_V4),
+                (Instant::from_secs(1), REMOTE_V4),
+                (Instant::from_secs(3), REMOTE_V4),
+                (Instant::from_secs(7), REMOTE_V4),
+                (Instant::from_secs(10), OTHER_V4),
+            ]
+        );
+    }
+
     /// Packets parked on a neighbor resolution stay parked if the device has no
     /// room when the resolution comes in, and go out on a later poll.
     #[test]
@@ -5760,6 +5813,39 @@ pub(crate) mod test {
         rx.borrow_mut().push_back(frag1);
         assert_eq!(stack.poll(Instant::from_secs(13)), Instant::MAX);
         assert!(stack.raw_socket(handle).can_recv());
+        assert_eq!(stack.raw_socket(handle).recv().unwrap().len(), IPV4_HEADER_LEN + 30);
+    }
+
+    /// With a zero reassembly timeout, the fragments of a packet must all arrive in
+    /// one poll. An incomplete packet is dropped before `poll` returns, instead of
+    /// being left due.
+    #[test]
+    #[cfg(all(feature = "raw-ip", feature = "ipv4-reassembly"))]
+    fn test_ipv4_reassembly_zero_timeout() {
+        let (mut stack, rx, _tx) = test_stack(Medium::Ip);
+        let handle = stack.add_raw_socket().unwrap();
+        stack
+            .raw_socket(handle)
+            .bind(RawMode::Ip {
+                version: Some(IpVersion::V4),
+                protocol: Some(IpProtocol(99)),
+            })
+            .unwrap();
+        stack.set_reassembly_timeout(Duration::ZERO);
+
+        let proto = IpProtocol(99);
+        let frag1 = ipv4_fragment(REMOTE_V4, OUR_V4, proto, 0x1234, true, 0, &[0xAA; 24]);
+        let frag2 = ipv4_fragment(REMOTE_V4, OUR_V4, proto, 0x1234, false, 24, &[0xBB; 6]);
+
+        rx.borrow_mut().push_back(frag1.clone());
+        assert_eq!(stack.poll(Instant::from_secs(1)), Instant::MAX);
+        rx.borrow_mut().push_back(frag2.clone());
+        assert_eq!(stack.poll(Instant::from_secs(1)), Instant::MAX);
+        assert!(!stack.raw_socket(handle).can_recv());
+
+        rx.borrow_mut().push_back(frag1);
+        rx.borrow_mut().push_back(frag2);
+        assert_eq!(stack.poll(Instant::from_secs(2)), Instant::MAX);
         assert_eq!(stack.raw_socket(handle).recv().unwrap().len(), IPV4_HEADER_LEN + 30);
     }
 

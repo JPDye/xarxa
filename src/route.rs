@@ -288,7 +288,7 @@ impl Routes {
                     return false;
                 }
                 if let Some(expires_at) = route.expires_at
-                    && timestamp > expires_at
+                    && expires_at <= timestamp
                 {
                     return false;
                 }
@@ -428,11 +428,11 @@ mod test {
         assert_eq!(lookup(&routes, ADDR_2A, 0), Some((ADDR_2A.into(), IF_1)));
         assert_eq!(lookup(&routes, ADDR_2B, 0), Some((ADDR_2A.into(), IF_1)));
 
-        // The expiry timestamp itself is still valid...
-        assert_eq!(lookup(&routes, ADDR_2A, 10), Some((ADDR_2A.into(), IF_1)));
-        // ...but past it, the route is gone.
-        assert_eq!(lookup(&routes, ADDR_2B, 11), None);
-        assert_eq!(lookup(&routes, ADDR_1A, 11), Some((ADDR_1A.into(), IF_0)));
+        // Up to the expiry timestamp the route is valid...
+        assert_eq!(lookup(&routes, ADDR_2A, 9), Some((ADDR_2A.into(), IF_1)));
+        // ...and from it on, the route is gone.
+        assert_eq!(lookup(&routes, ADDR_2B, 10), None);
+        assert_eq!(lookup(&routes, ADDR_1A, 10), Some((ADDR_1A.into(), IF_0)));
     }
 
     #[test]

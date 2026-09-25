@@ -64,4 +64,20 @@ fn exhaustion() {
         again.push(buf);
     }
     assert!(again.len() >= count);
+
+    // Still with no buffer free: a router solicitation that can't be built counts
+    // as sent, and the retry timer sends the next one, 4 s later. The stack doesn't
+    // ask to be polled again right away.
+    #[cfg(all(feature = "slaac", feature = "medium-ethernet"))]
+    {
+        use xarxa::iface::slaac::SlaacConfig;
+        use xarxa::time::Instant;
+        use xarxa::wire::EthernetAddress;
+
+        let mut stack = Stack::new(0x1234_5678_dead_beef);
+        let hw = HardwareAddress::Ethernet(EthernetAddress([0x02, 0, 0, 0, 0, 0x01]));
+        let iface = TestDevice::new(Medium::Ethernet).install(&mut stack, hw);
+        stack.iface(iface).set_slaac(Some(SlaacConfig::default())).unwrap();
+        assert_eq!(stack.poll(Instant::from_secs(1)), Instant::from_secs(5));
+    }
 }

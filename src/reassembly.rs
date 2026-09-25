@@ -14,7 +14,7 @@ use crate::driver::PacketBuf;
 use crate::driver::config::PACKET_BUF_SIZE;
 use crate::stack::Stack;
 use crate::storage::Assembler;
-use crate::time::{Duration, Instant};
+use crate::time::{Clock, Duration, Instant};
 use crate::wire::*;
 
 /// Problem when assembling: something was out of bounds, or no packet buffer is free.
@@ -101,11 +101,6 @@ impl<K> PacketAssembler<K> {
 
         self.total_size = Some(size);
         Ok(())
-    }
-
-    /// Return the instant when the assembler expires.
-    pub(crate) fn expires_at(&self) -> Instant {
-        self.expires_at
     }
 
     /// Add a fragment into the packet that is being reassembled.
@@ -199,21 +194,12 @@ impl<K: Eq + Copy> PacketAssemblerSet<K> {
     }
 
     /// Remove all [`PacketAssembler`]s that are expired.
-    pub fn remove_expired(&mut self, timestamp: Instant) {
+    pub fn remove_expired(&mut self, clock: &mut Clock) {
         for frag in &mut self.assemblers {
-            if !frag.is_free() && frag.expires_at <= timestamp {
+            if !frag.is_free() && clock.expired(frag.expires_at) {
                 frag.reset();
             }
         }
-    }
-
-    /// The earliest instant at which an assembler expires, [`Instant::MAX`] if none is in use.
-    pub fn poll_at(&self) -> Instant {
-        self.assemblers
-            .iter()
-            .filter(|frag| !frag.is_free())
-            .map(|frag| frag.expires_at())
-            .fold(Instant::MAX, Instant::min)
     }
 }
 
@@ -438,15 +424,14 @@ mod tests {
         let mut set = PacketAssemblerSet::new();
         let key = Key { id: 0 };
         set.get(&key, Instant::from_secs(10)).unwrap();
-        assert_eq!(set.poll_at(), Instant::from_secs(10));
+        let mut clock = Clock::new(Instant::from_secs(9));
+        set.remove_expired(&mut clock);
+        assert_eq!(clock.next(), Instant::from_secs(10));
 
-        set.remove_expired(Instant::from_secs(9));
-        assert_eq!(set.poll_at(), Instant::from_secs(10));
-
-        // Polling at the deadline `poll_at` returned must remove it, or the
-        // stack keeps asking to be polled right away.
-        set.remove_expired(Instant::from_secs(10));
-        assert_eq!(set.poll_at(), Instant::MAX);
+        // Polling at the deadline removes it.
+        let mut clock = Clock::new(Instant::from_secs(10));
+        set.remove_expired(&mut clock);
+        assert_eq!(clock.next(), Instant::MAX);
     }
 
     #[test]

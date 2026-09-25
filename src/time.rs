@@ -161,6 +161,78 @@ impl Instant {
     }
 }
 
+/// One poll's view of time: when the poll runs, and the earliest timer due after that.
+///
+/// [`Stack::poll`](crate::Stack::poll) makes one and passes it to everything that
+/// has timers. Checking a timer with [`expired`](Self::expired) also counts it
+/// toward the next deadline when it hasn't fired, so the check and the deadline
+/// can't disagree. Nothing counts a deadline that is already due, so the one a
+/// poll returns is always later than the poll.
+pub(crate) struct Clock {
+    now: Instant,
+    next: Instant,
+}
+
+// Some builds have no timers at all, and use only `new` and `next`.
+#[allow(dead_code)]
+impl Clock {
+    /// A clock for a poll at `now`, with no timers counted yet.
+    pub(crate) const fn new(now: Instant) -> Self {
+        Self {
+            now,
+            next: Instant::MAX,
+        }
+    }
+
+    /// The time of the poll.
+    pub(crate) const fn now(&self) -> Instant {
+        self.now
+    }
+
+    /// The earliest deadline counted, or [`Instant::MAX`] if there is none.
+    pub(crate) const fn next(&self) -> Instant {
+        self.next
+    }
+
+    /// Whether a timer set for `deadline` has fired. If it hasn't, `deadline`
+    /// counts toward the next deadline.
+    ///
+    /// A timer fires at its deadline. With `<` instead of `<=` it would stay due
+    /// at the deadline it reported, and the stack would ask to be polled right
+    /// away, forever.
+    pub(crate) fn expired(&mut self, deadline: Instant) -> bool {
+        if deadline <= self.now {
+            return true;
+        }
+        self.next = self.next.min(deadline);
+        false
+    }
+
+    /// Count a timer set for `deadline` toward the next deadline, for a timer
+    /// that isn't checked with [`expired`](Self::expired) in this poll.
+    ///
+    /// The deadline must be later than now: a timer that is due must have fired.
+    #[track_caller]
+    pub(crate) fn schedule(&mut self, deadline: Instant) {
+        debug_assert!(
+            deadline > self.now,
+            "timer due at {} left for a poll at {}",
+            deadline,
+            self.now
+        );
+        self.next = self.next.min(deadline);
+    }
+
+    /// Set a timer `delay` from now. Returns its deadline, which counts toward
+    /// the next one.
+    #[track_caller]
+    pub(crate) fn after(&mut self, delay: Duration) -> Instant {
+        let deadline = self.now + delay;
+        self.schedule(deadline);
+        deadline
+    }
+}
+
 #[cfg(feature = "std")]
 impl From<::std::time::Instant> for Instant {
     fn from(other: ::std::time::Instant) -> Instant {

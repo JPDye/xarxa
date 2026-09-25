@@ -24,7 +24,7 @@ use crate::driver::ChecksumCapabilities;
 use crate::driver::PacketBuf;
 use crate::route::{Route, RouteOrigin};
 use crate::stack::StackInner;
-use crate::time::{Duration, Instant};
+use crate::time::{Clock, Duration, Instant};
 use crate::wire::{
     DHCP_CLIENT_PORT, DHCP_HEADER_LEN, DHCP_MAGIC_NUMBER, DHCP_SERVER_PORT, DhcpFlags, DhcpMessageType, DhcpOption,
     DhcpPacket, EthernetAddress, IPV4_HEADER_LEN, IpAddr, IpCidr, Ipv4Addr, Ipv4AddrExt, Ipv4Cidr, LINK_HEADER_LEN,
@@ -213,6 +213,17 @@ struct RenewState {
     expires_at: Instant,
 }
 
+impl RenewState {
+    /// When the next renew or rebind REQUEST is due.
+    fn retry_at(&self) -> Instant {
+        if self.rebinding {
+            self.rebind_at
+        } else {
+            self.renew_at.min(self.rebind_at)
+        }
+    }
+}
+
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 enum ClientState {
@@ -288,20 +299,6 @@ impl Client {
         match &self.state {
             ClientState::Renewing(state) => Some(&state.lease),
             _ => None,
-        }
-    }
-
-    /// When the client next wants to run.
-    pub(crate) fn poll_at(&self) -> Instant {
-        match &self.state {
-            ClientState::Discovering(state) => state.retry_at,
-            ClientState::Requesting(state) => state.retry_at,
-            ClientState::Renewing(state) => if state.rebinding {
-                state.rebind_at
-            } else {
-                state.renew_at.min(state.rebind_at)
-            }
-            .min(state.expires_at),
         }
     }
 
@@ -668,130 +665,139 @@ impl IfaceState<'_> {
 
     /// Run the client's timers: send whatever is due, expire the lease when its
     /// time comes.
-    pub(crate) fn dhcpv4_dispatch(&mut self, inner: &mut StackInner) {
+    pub(crate) fn dhcpv4_poll(&mut self, inner: &mut StackInner, clock: &mut Clock) {
         let ethernet_addr = self.hardware_addr;
         let ip_mtu = self.ip_mtu();
         let checksum_caps = self.checksum_caps();
-        let Some(client) = &mut self.dhcpv4 else { return };
-        let ethernet_addr = ethernet_addr.ethernet_or_panic();
-        let now = inner.now;
+        let now = clock.now();
 
-        match &mut client.state {
-            ClientState::Discovering(state) => {
-                if now < state.retry_at {
+        // Giving up on a server, or losing the lease, restarts discovery, and the
+        // first DISCOVER is due at once. Go around again to send it.
+        loop {
+            let Some(client) = &mut self.dhcpv4 else { return };
+            let ethernet_addr = ethernet_addr.ethernet_or_panic();
+
+            match &mut client.state {
+                ClientState::Discovering(state) => {
+                    if !clock.expired(state.retry_at) {
+                        return;
+                    }
+
+                    debug!("DHCP send DISCOVER to {}", Ipv4Addr::BROADCAST);
+                    client.transaction_id = Client::random_transaction_id(inner);
+                    state.retry_at = clock.after(DISCOVER_TIMEOUT);
+                    let buf = Client::build(
+                        &client.config,
+                        #[cfg(feature = "hostname")]
+                        inner.hostname(),
+                        DhcpMessageType::Discover,
+                        client.transaction_id,
+                        ethernet_addr,
+                        Ipv4Addr::UNSPECIFIED,
+                        None,
+                        None,
+                        ip_mtu,
+                        Ipv4Addr::UNSPECIFIED,
+                        Ipv4Addr::BROADCAST,
+                        &checksum_caps,
+                    );
+                    if let Some(buf) = buf {
+                        inner.transmit_ipv4_on(self, Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST, buf);
+                    }
                     return;
                 }
+                ClientState::Requesting(state) => {
+                    if !clock.expired(state.retry_at) {
+                        return;
+                    }
 
-                debug!("DHCP send DISCOVER to {}", Ipv4Addr::BROADCAST);
-                client.transaction_id = Client::random_transaction_id(inner);
-                state.retry_at = now + DISCOVER_TIMEOUT;
-                let buf = Client::build(
-                    &client.config,
-                    #[cfg(feature = "hostname")]
-                    inner.hostname(),
-                    DhcpMessageType::Discover,
-                    client.transaction_id,
-                    ethernet_addr,
-                    Ipv4Addr::UNSPECIFIED,
-                    None,
-                    None,
-                    ip_mtu,
-                    Ipv4Addr::UNSPECIFIED,
-                    Ipv4Addr::BROADCAST,
-                    &checksum_caps,
-                );
-                if let Some(buf) = buf {
-                    inner.transmit_ipv4_on(self, Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST, buf);
-                }
-            }
-            ClientState::Requesting(state) => {
-                if now < state.retry_at {
+                    if state.retry >= REQUEST_RETRIES {
+                        debug!("DHCP request retries exceeded, restarting discovery");
+                        self.dhcpv4_reset(inner);
+                        continue;
+                    }
+
+                    debug!("DHCP send request to {}", Ipv4Addr::BROADCAST);
+                    // Exponential backoff: Double every 2 retries.
+                    state.retry_at = clock.after(INITIAL_REQUEST_TIMEOUT * (1u32 << (state.retry as u32 / 2)));
+                    state.retry += 1;
+                    let buf = Client::build(
+                        &client.config,
+                        #[cfg(feature = "hostname")]
+                        inner.hostname(),
+                        DhcpMessageType::Request,
+                        client.transaction_id,
+                        ethernet_addr,
+                        Ipv4Addr::UNSPECIFIED,
+                        Some(state.requested_ip),
+                        Some(state.server.identifier),
+                        ip_mtu,
+                        Ipv4Addr::UNSPECIFIED,
+                        Ipv4Addr::BROADCAST,
+                        &checksum_caps,
+                    );
+                    if let Some(buf) = buf {
+                        inner.transmit_ipv4_on(self, Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST, buf);
+                    }
                     return;
                 }
+                ClientState::Renewing(state) => {
+                    if clock.expired(state.expires_at) {
+                        debug!("DHCP lease expired");
+                        self.dhcpv4_reset(inner);
+                        continue;
+                    }
 
-                if state.retry >= REQUEST_RETRIES {
-                    debug!("DHCP request retries exceeded, restarting discovery");
-                    self.dhcpv4_reset(inner);
+                    if !clock.expired(state.retry_at()) {
+                        return;
+                    }
+
+                    state.rebinding |= now >= state.rebind_at;
+
+                    let src_addr = state.lease.address.address();
+                    // Renewing is unicast to the original server, rebinding is broadcast
+                    let dst_addr = if state.rebinding {
+                        Ipv4Addr::BROADCAST
+                    } else {
+                        state.lease.server.address
+                    };
+
+                    // In both RENEWING and REBINDING states, if the client receives no
+                    // response to its DHCPREQUEST message, the client SHOULD wait one-half
+                    // of the remaining time until T2 (in RENEWING state) and one-half of
+                    // the remaining lease time (in REBINDING state), down to a minimum of
+                    // 60 seconds, before retransmitting the DHCPREQUEST message.
+                    if state.rebinding {
+                        state.rebind_at = clock.after(MIN_RENEW_TIMEOUT.max((state.expires_at - now) / 2));
+                    } else {
+                        state.renew_at = clock.after(
+                            MIN_RENEW_TIMEOUT
+                                .max((state.rebind_at - now) / 2)
+                                .min(state.rebind_at - now),
+                        );
+                    }
+
+                    debug!("DHCP send renew to {}", dst_addr);
+                    client.transaction_id = Client::random_transaction_id(inner);
+                    let buf = Client::build(
+                        &client.config,
+                        #[cfg(feature = "hostname")]
+                        inner.hostname(),
+                        DhcpMessageType::Request,
+                        client.transaction_id,
+                        ethernet_addr,
+                        src_addr,
+                        None,
+                        None,
+                        ip_mtu,
+                        src_addr,
+                        dst_addr,
+                        &checksum_caps,
+                    );
+                    if let Some(buf) = buf {
+                        inner.transmit_ipv4_on(self, src_addr, dst_addr, buf);
+                    }
                     return;
-                }
-
-                debug!("DHCP send request to {}", Ipv4Addr::BROADCAST);
-                // Exponential backoff: Double every 2 retries.
-                state.retry_at = now + INITIAL_REQUEST_TIMEOUT * (1u32 << (state.retry as u32 / 2));
-                state.retry += 1;
-                let buf = Client::build(
-                    &client.config,
-                    #[cfg(feature = "hostname")]
-                    inner.hostname(),
-                    DhcpMessageType::Request,
-                    client.transaction_id,
-                    ethernet_addr,
-                    Ipv4Addr::UNSPECIFIED,
-                    Some(state.requested_ip),
-                    Some(state.server.identifier),
-                    ip_mtu,
-                    Ipv4Addr::UNSPECIFIED,
-                    Ipv4Addr::BROADCAST,
-                    &checksum_caps,
-                );
-                if let Some(buf) = buf {
-                    inner.transmit_ipv4_on(self, Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST, buf);
-                }
-            }
-            ClientState::Renewing(state) => {
-                if state.expires_at <= now {
-                    debug!("DHCP lease expired");
-                    self.dhcpv4_reset(inner);
-                    return;
-                }
-
-                if now < state.renew_at || state.rebinding && now < state.rebind_at {
-                    return;
-                }
-
-                state.rebinding |= now >= state.rebind_at;
-
-                let src_addr = state.lease.address.address();
-                // Renewing is unicast to the original server, rebinding is broadcast
-                let dst_addr = if state.rebinding {
-                    Ipv4Addr::BROADCAST
-                } else {
-                    state.lease.server.address
-                };
-
-                // In both RENEWING and REBINDING states, if the client receives no
-                // response to its DHCPREQUEST message, the client SHOULD wait one-half
-                // of the remaining time until T2 (in RENEWING state) and one-half of
-                // the remaining lease time (in REBINDING state), down to a minimum of
-                // 60 seconds, before retransmitting the DHCPREQUEST message.
-                if state.rebinding {
-                    state.rebind_at = now + MIN_RENEW_TIMEOUT.max((state.expires_at - now) / 2);
-                } else {
-                    state.renew_at = now
-                        + MIN_RENEW_TIMEOUT
-                            .max((state.rebind_at - now) / 2)
-                            .min(state.rebind_at - now);
-                }
-
-                debug!("DHCP send renew to {}", dst_addr);
-                client.transaction_id = Client::random_transaction_id(inner);
-                let buf = Client::build(
-                    &client.config,
-                    #[cfg(feature = "hostname")]
-                    inner.hostname(),
-                    DhcpMessageType::Request,
-                    client.transaction_id,
-                    ethernet_addr,
-                    src_addr,
-                    None,
-                    None,
-                    ip_mtu,
-                    src_addr,
-                    dst_addr,
-                    &checksum_caps,
-                );
-                if let Some(buf) = buf {
-                    inner.transmit_ipv4_on(self, src_addr, dst_addr, buf);
                 }
             }
         }
@@ -1737,15 +1743,10 @@ mod test {
         }
 
         // The fifth REQUEST was the last. 20 s after it, at 50 s, the client gives
-        // up: the poll that notices sends nothing and asks to be polled again at
-        // once, and that poll sends a fresh DISCOVER.
+        // up, and the same poll sends a fresh DISCOVER.
         assert_eq!(stack.poll(at(49)), at(50));
         assert_eq!(tx.borrow().len(), 6);
-        let deadline = stack.poll(at(69));
-        assert!(deadline <= at(69), "deadline {} should be due at once", deadline);
-        assert_eq!(tx.borrow().len(), 6);
-        assert!(stack.iface(IFACE).dhcpv4_lease().is_none());
-        stack.poll(at(70));
+        assert_eq!(stack.poll(at(50)), at(50) + DISCOVER_TIMEOUT);
         assert_eq!(tx.borrow().len(), 7);
         let new_xid = assert_discover(&tx.borrow()[6]);
         assert!(stack.iface(IFACE).dhcpv4_lease().is_none());
@@ -1753,7 +1754,7 @@ mod test {
         // The new discovery works like the first.
         rx.borrow_mut()
             .push_back(reply(DhcpMessageType::Offer, new_xid, OFFERED_IP, &ack_options()));
-        stack.poll(at(70));
+        stack.poll(at(51));
         assert_eq!(tx.borrow().len(), 8);
         assert_initial_request(&tx.borrow()[7], new_xid);
     }

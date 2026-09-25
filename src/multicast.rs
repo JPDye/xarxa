@@ -9,7 +9,7 @@ use crate::storage::Vec;
 use crate::driver::PacketBuf;
 use crate::iface::{Iface, IfaceState};
 use crate::stack::StackInner;
-use crate::time::{Duration, Instant};
+use crate::time::{Clock, Duration, Instant};
 use crate::wire::*;
 
 /// Error type for [`Iface::join_multicast_group`] and [`Iface::leave_multicast_group`].
@@ -85,27 +85,6 @@ impl State {
             Some(GroupState::Joined) => true,
             Some(GroupState::Leaving) => false,
         }
-    }
-
-    /// The earliest time at which a pending membership report is due.
-    pub(crate) fn poll_at(&self) -> Instant {
-        #[allow(unused_mut)]
-        let mut deadline = Instant::MAX;
-        #[cfg(feature = "ipv4")]
-        match self.igmp_report_state {
-            IgmpReportState::Inactive => {}
-            IgmpReportState::ToGeneralQuery { timeout, .. } | IgmpReportState::ToSpecificQuery { timeout, .. } => {
-                deadline = deadline.min(timeout)
-            }
-        }
-        #[cfg(feature = "ipv6")]
-        match self.mld_report_state {
-            MldReportState::Inactive => {}
-            MldReportState::ToGeneralQuery { timeout } | MldReportState::ToSpecificQuery { timeout, .. } => {
-                deadline = deadline.min(timeout)
-            }
-        }
-        deadline
     }
 
     fn get(&self, addr: &IpAddr) -> Option<GroupState> {
@@ -277,7 +256,7 @@ impl IfaceState<'_> {
     /// - Send join/leave packets according to the multicast group state.
     /// - Depending on `igmp_report_state` and the therein contained
     ///   timeouts, send IGMP membership reports.
-    pub(crate) fn multicast_egress(&mut self, inner: &mut StackInner) {
+    pub(crate) fn multicast_egress(&mut self, inner: &mut StackInner, clock: &mut Clock) {
         // Process multicast joins.
         while let Some(&(addr, _)) = self
             .multicast
@@ -333,63 +312,67 @@ impl IfaceState<'_> {
             self.multicast.remove(&addr);
         }
 
+        // Send every report that is due. After a late poll, several of the reports
+        // a general query spreads out can be due at once.
         #[cfg(feature = "ipv4")]
-        match self.multicast.igmp_report_state {
-            IgmpReportState::ToSpecificQuery {
-                version,
-                timeout,
-                group,
-            } if inner.now >= timeout => {
-                if let Some(pkt) = self.igmp_report_packet(version, group) {
-                    // Send initial membership report
-                    self.dispatch_ip(inner, pkt);
+        loop {
+            match self.multicast.igmp_report_state {
+                IgmpReportState::ToSpecificQuery {
+                    version,
+                    timeout,
+                    group,
+                } if clock.expired(timeout) => {
+                    if let Some(pkt) = self.igmp_report_packet(version, group) {
+                        // Send initial membership report
+                        self.dispatch_ip(inner, pkt);
+                    }
+                    self.multicast.igmp_report_state = IgmpReportState::Inactive;
                 }
-                self.multicast.igmp_report_state = IgmpReportState::Inactive;
-            }
-            IgmpReportState::ToGeneralQuery {
-                version,
-                timeout,
-                interval,
-                next_index,
-            } if inner.now >= timeout => {
-                let addr = self
-                    .multicast
-                    .keys()
-                    .filter_map(|addr| match addr {
-                        IpAddr::V4(addr) => Some(*addr),
-                        #[allow(unreachable_patterns)]
-                        _ => None,
-                    })
-                    .nth(next_index);
+                IgmpReportState::ToGeneralQuery {
+                    version,
+                    timeout,
+                    interval,
+                    next_index,
+                } if clock.expired(timeout) => {
+                    let addr = self
+                        .multicast
+                        .keys()
+                        .filter_map(|addr| match addr {
+                            IpAddr::V4(addr) => Some(*addr),
+                            #[allow(unreachable_patterns)]
+                            _ => None,
+                        })
+                        .nth(next_index);
 
-                match addr {
-                    Some(addr) => {
-                        if let Some(pkt) = self.igmp_report_packet(version, addr) {
-                            // Send initial membership report
-                            self.dispatch_ip(inner, pkt);
+                    match addr {
+                        Some(addr) => {
+                            if let Some(pkt) = self.igmp_report_packet(version, addr) {
+                                // Send initial membership report
+                                self.dispatch_ip(inner, pkt);
 
-                            let next_timeout = (timeout + interval).max(inner.now);
-                            self.multicast.igmp_report_state = IgmpReportState::ToGeneralQuery {
-                                version,
-                                timeout: next_timeout,
-                                interval,
-                                next_index: next_index + 1,
-                            };
-                        } else {
-                            // No address to report from: nothing else to send.
+                                let next_timeout = (timeout + interval).max(clock.now());
+                                self.multicast.igmp_report_state = IgmpReportState::ToGeneralQuery {
+                                    version,
+                                    timeout: next_timeout,
+                                    interval,
+                                    next_index: next_index + 1,
+                                };
+                            } else {
+                                // No address to report from: nothing else to send.
+                                self.multicast.igmp_report_state = IgmpReportState::Inactive;
+                            }
+                        }
+                        None => {
                             self.multicast.igmp_report_state = IgmpReportState::Inactive;
                         }
                     }
-                    None => {
-                        self.multicast.igmp_report_state = IgmpReportState::Inactive;
-                    }
                 }
+                _ => break,
             }
-            _ => {}
         }
         #[cfg(feature = "ipv6")]
         match self.multicast.mld_report_state {
-            MldReportState::ToGeneralQuery { timeout } if inner.now >= timeout => {
+            MldReportState::ToGeneralQuery { timeout } if clock.expired(timeout) => {
                 let records = self.multicast.keys().filter_map(|addr| match addr {
                     IpAddr::V6(addr) => Some((MldRecordType::ModeIsExclude, *addr)),
                     #[allow(unreachable_patterns)]
@@ -400,7 +383,7 @@ impl IfaceState<'_> {
                 }
                 self.multicast.mld_report_state = MldReportState::Inactive;
             }
-            MldReportState::ToSpecificQuery { group, timeout } if inner.now >= timeout => {
+            MldReportState::ToSpecificQuery { group, timeout } if clock.expired(timeout) => {
                 let record = (MldRecordType::ModeIsExclude, group);
                 if let Some(pkt) = self.mldv2_report_packet(core::iter::once(record)) {
                     self.dispatch_ip(inner, pkt);
@@ -1016,6 +999,46 @@ mod test {
                     )
                 );
             }
+        }
+    }
+
+    /// A general query's reports are spread over the maximum response time. A poll
+    /// that comes after several of them are due sends them all, instead of one per
+    /// poll with a request to be polled again right away.
+    #[test]
+    fn test_igmp_general_query_late_poll() {
+        for medium in [Medium::Ip, Medium::Ethernet] {
+            let groups = [Ipv4Addr::new(224, 0, 0, 22), Ipv4Addr::new(224, 0, 0, 56)];
+
+            let (mut stack, rx, tx) = test_stack(medium);
+            for group in &groups {
+                stack.iface(IFACE).join_multicast_group(*group).unwrap();
+            }
+            stack.poll(Instant::ZERO);
+            tx.borrow_mut().clear();
+
+            let max_resp_time = Duration::from_secs(10);
+            let query = igmp_packet(
+                REMOTE_V4,
+                IPV4_MULTICAST_ALL_SYSTEMS,
+                IgmpMessage::MembershipQuery,
+                max_resp_time,
+                Ipv4Addr::UNSPECIFIED,
+            );
+            let deadline = inject(&mut stack, &rx, medium, EthernetProtocol::Ipv4, query, Instant::ZERO);
+            assert_eq!(deadline, Instant::ZERO + max_resp_time / 3);
+
+            let deadline = stack.poll(Instant::from_secs(20));
+            assert_eq!(
+                recv_igmp(medium, &tx),
+                [
+                    (OUR_V4, groups[0], 1, IgmpMessage::MembershipReportV2, groups[0]),
+                    (OUR_V4, groups[1], 1, IgmpMessage::MembershipReportV2, groups[1]),
+                ]
+            );
+            // The next look for a group to report finds none left.
+            assert_eq!(stack.poll(deadline), Instant::MAX);
+            assert!(recv_igmp(medium, &tx).is_empty());
         }
     }
 

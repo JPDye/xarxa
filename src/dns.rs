@@ -20,7 +20,7 @@ use crate::storage::Slab;
 use heapless::Vec;
 
 use crate::stack::Stack;
-use crate::time::{Duration, Instant};
+use crate::time::{Clock, Duration, Instant};
 use crate::udp::{RecvError, SendError, UdpHandle};
 use crate::wire::dns::{Flags, HEADER_LEN, Opcode, Packet, Question, Rcode, Record, RecordData, Type};
 use crate::wire::{IpAddr, ListenSocketAddr, SocketAddr};
@@ -350,9 +350,10 @@ impl DnsClient {
     ///
     /// Uses the time of the last `Stack::poll`.
     ///
-    /// Returns the next time `poll` should be called to retransmit a query, or
-    /// [`Instant::MAX`] if no query is pending. Call it after every [`Stack::poll`],
-    /// and again when that deadline arrives.
+    /// Returns the next time `poll` should be called to retransmit a query or try
+    /// the next server, or [`Instant::MAX`] if no query is pending. It is always
+    /// later than the time of the last `Stack::poll`. Call it after every
+    /// [`Stack::poll`], and again when that deadline arrives.
     #[must_use]
     pub fn poll(&mut self, stack: &mut Stack) -> Instant {
         self.process(stack);
@@ -523,7 +524,7 @@ impl DnsClient {
 
     fn dispatch(&mut self, stack: &mut Stack) -> Instant {
         let now = stack.inner.now;
-        let mut next_poll_at = Instant::MAX;
+        let mut clock = Clock::new(now);
 
         for (_, q) in self.queries.iter_mut() {
             if let State::Pending(pq) = &mut q.state {
@@ -541,7 +542,7 @@ impl DnsClient {
                     MulticastDns::Disabled => self.servers.as_slice(),
                 };
 
-                let timeout = if let Some(timeout) = pq.timeout_at {
+                let mut timeout = if let Some(timeout) = pq.timeout_at {
                     timeout
                 } else {
                     let v = now + RETRANSMIT_TIMEOUT;
@@ -550,9 +551,10 @@ impl DnsClient {
                 };
 
                 // Check timeout
-                if timeout < now {
+                if timeout <= now {
                     // DNS timeout
-                    pq.timeout_at = Some(now + RETRANSMIT_TIMEOUT);
+                    timeout = now + RETRANSMIT_TIMEOUT;
+                    pq.timeout_at = Some(timeout);
                     pq.retransmit_at = Instant::ZERO;
                     pq.delay = RETRANSMIT_DELAY;
 
@@ -573,9 +575,9 @@ impl DnsClient {
                     continue;
                 }
 
-                if pq.retransmit_at > now {
+                if !clock.expired(pq.retransmit_at) {
                     // query is waiting for retransmit
-                    next_poll_at = next_poll_at.min(pq.retransmit_at);
+                    clock.schedule(timeout);
                     continue;
                 }
 
@@ -621,13 +623,13 @@ impl DnsClient {
                     }
                 }
 
-                pq.retransmit_at = now + pq.delay;
+                pq.retransmit_at = clock.after(pq.delay);
                 pq.delay = MAX_RETRANSMIT_DELAY.min(pq.delay * 2);
-                next_poll_at = next_poll_at.min(pq.retransmit_at);
+                clock.schedule(timeout);
             }
         }
 
-        next_poll_at
+        clock.next()
     }
 }
 

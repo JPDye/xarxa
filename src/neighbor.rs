@@ -7,7 +7,7 @@ use crate::storage::BoundedVec;
 use crate::driver::PacketBuf;
 use crate::error::NotUnicast;
 use crate::iface::IfaceHandle;
-use crate::time::{Duration, Instant};
+use crate::time::{Clock, Duration, Instant};
 use crate::wire::{HardwareAddress, IpAddr};
 
 /// Key identifying a neighbor: the interface it is reachable through, plus its
@@ -491,9 +491,9 @@ impl PendingQueue {
     }
 
     /// Drop packets that have waited too long.
-    pub fn purge_expired(&mut self, timestamp: Instant) {
+    pub fn purge_expired(&mut self, clock: &mut Clock) {
         self.packets.retain(|packet| {
-            if timestamp >= packet.expires_at {
+            if clock.expired(packet.expires_at) {
                 trace!(
                     "neighbor: dropping queued packet for {}, resolution timed out",
                     packet.key.1
@@ -508,14 +508,6 @@ impl PendingQueue {
     /// Drop all packets queued on the given interface.
     pub fn purge_iface(&mut self, iface: IfaceHandle) {
         self.packets.retain(|packet| packet.key.0 != iface);
-    }
-
-    /// The earliest expiry timer in the queue, or `Instant::MAX` if the queue is empty.
-    pub fn poll_at(&self) -> Instant {
-        self.packets
-            .iter()
-            .map(|packet| packet.expires_at)
-            .fold(Instant::MAX, Instant::min)
     }
 }
 
@@ -838,10 +830,14 @@ mod test {
         let mut queue = PendingQueue::new();
 
         queue.push(key(MOCK_IP_ADDR_1), PacketBuf::try_new().unwrap(), Instant::ZERO);
-        assert_eq!(queue.poll_at(), Instant::ZERO + PENDING_QUEUE_LIFETIME);
-        queue.purge_expired(Instant::ZERO + PENDING_QUEUE_LIFETIME);
+        let mut clock = Clock::new(Instant::ZERO);
+        queue.purge_expired(&mut clock);
+        assert_eq!(clock.next(), Instant::ZERO + PENDING_QUEUE_LIFETIME);
+
+        let mut clock = Clock::new(Instant::ZERO + PENDING_QUEUE_LIFETIME);
+        queue.purge_expired(&mut clock);
+        assert_eq!(clock.next(), Instant::MAX);
         assert!(take_matching(&mut queue, &key(MOCK_IP_ADDR_1)).is_empty());
-        assert_eq!(queue.poll_at(), Instant::MAX);
     }
 
     #[test]
