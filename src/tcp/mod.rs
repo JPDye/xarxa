@@ -1654,6 +1654,24 @@ impl<'d> TcpSocketState<'d> {
         }
     }
 
+    /// Record that a segment carrying this ACK and window went out, and stop the
+    /// delayed-ACK timer.
+    fn ack_sent(&mut self, ack_number: Option<TcpSeqNumber>, window_len: u16) {
+        self.remote_last_ack = ack_number;
+        self.remote_last_win = window_len;
+
+        match self.ack_delay_timer {
+            AckDelayTimer::Idle => {}
+            AckDelayTimer::Waiting(_) => {
+                trace!("stop delayed ack timer")
+            }
+            AckDelayTimer::Immediate => {
+                trace!("stop delayed ack timer (was force-expired)")
+            }
+        }
+        self.ack_delay_timer = AckDelayTimer::Idle;
+    }
+
     /// Build the SACK blocks for an outgoing ACK, per RFC 2018, and record
     /// what was reported in `local_sack_history`.
     ///
@@ -1971,6 +1989,30 @@ impl<'d> TcpSocketState<'d> {
             State::FinWait2 | State::TimeWait => {}
         }
 
+        // A zero-window probe is the next octet of data, past the edge of the
+        // window. It isn't counted as sent, so the rest of the state is left
+        // intact. The remote accepts its ACK even with a zero window (RFC 9293
+        // 3.10.7.4), so it carries any ACK or window update that is due.
+        if let Timer::ZeroWindowProbe { expires_at, delay } = self.timer
+            && clock.expired(expires_at)
+        {
+            trace!("sending a zero-window probe");
+            let offset = self.flight_size();
+            let payload = self.tx_buffer.get_allocated(offset, 1);
+            send(TcpRepr {
+                control: data_control(offset, payload.len()),
+                seq_number: self.remote_last_seq,
+                payload,
+                ..repr
+            })?;
+            self.ack_sent(repr.ack_number, repr.window_len);
+            let delay = (delay * 2).min(Duration::from_millis(RTTE_MAX_RTO as _));
+            self.timer = Timer::ZeroWindowProbe {
+                expires_at: clock.after(delay),
+                delay,
+            };
+        }
+
         // An ACK or a window update is due, and nothing sent above carried it.
         if self.ack_due(clock) {
             let offset = self.flight_size();
@@ -1981,6 +2023,8 @@ impl<'d> TcpSocketState<'d> {
             // A keep-alive is one garbage octet the remote has already acknowledged
             // (RFC 1122 says we should do this), so it answers with an ACK. It
             // carries a fake sequence number, so the rest of the state is left intact.
+            // The remote finds it unacceptable and ignores its ACK (RFC 9293
+            // 3.10.7.4), so it doesn't count as having sent one.
             Timer::Idle {
                 keep_alive_at: Some(keep_alive_at),
             } if clock.expired(keep_alive_at) => {
@@ -1992,24 +2036,6 @@ impl<'d> TcpSocketState<'d> {
                 })?;
                 self.timer = Timer::Idle {
                     keep_alive_at: self.keep_alive.map(|interval| clock.after(interval)),
-                };
-            }
-            // A zero-window probe is the next octet of data, past the edge of the
-            // window. It isn't counted as sent, so the rest of the state is left intact.
-            Timer::ZeroWindowProbe { expires_at, delay } if clock.expired(expires_at) => {
-                trace!("sending a zero-window probe");
-                let offset = self.flight_size();
-                let payload = self.tx_buffer.get_allocated(offset, 1);
-                send(TcpRepr {
-                    control: data_control(offset, payload.len()),
-                    seq_number: self.remote_last_seq,
-                    payload,
-                    ..repr
-                })?;
-                let delay = (delay * 2).min(Duration::from_millis(RTTE_MAX_RTO as _));
-                self.timer = Timer::ZeroWindowProbe {
-                    expires_at: clock.after(delay),
-                    delay,
                 };
             }
             // If we have spent enough time in the TIME-WAIT state, close the socket.
@@ -2074,31 +2100,20 @@ impl<'d> TcpSocketState<'d> {
         // to not waste time waiting for the retransmit timer on packets that we know
         // for sure will not be successfully transmitted.
         send(repr)?;
+        let segment_len = repr.segment_len();
+        let seq_end = repr.seq_number + segment_len;
 
         // Use max() so a fast-retransmit segment (whose seq_number is local_seq_no, well
         // behind the current frontier) doesn't rewind the tracked "highest sent" sequence.
-        self.remote_last_seq = self.remote_last_seq.max(repr.seq_number + repr.segment_len());
-        self.remote_last_ack = repr.ack_number;
-        self.remote_last_win = repr.window_len;
-
-        // Reset delayed-ack timer
-        match self.ack_delay_timer {
-            AckDelayTimer::Idle => {}
-            AckDelayTimer::Waiting(_) => {
-                trace!("stop delayed ack timer")
-            }
-            AckDelayTimer::Immediate => {
-                trace!("stop delayed ack timer (was force-expired)")
-            }
-        }
-        self.ack_delay_timer = AckDelayTimer::Idle;
+        self.remote_last_seq = self.remote_last_seq.max(seq_end);
+        self.ack_sent(repr.ack_number, repr.window_len);
 
         // We've sent something, so rewind the keep-alive timer.
         self.timer.rewind_keep_alive(now, self.keep_alive);
 
-        if repr.segment_len() > 0 {
-            self.rtte.on_send(now, repr.seq_number + repr.segment_len());
-            self.congestion_controller.post_transmit(now, repr.segment_len());
+        if segment_len > 0 {
+            self.rtte.on_send(now, seq_end);
+            self.congestion_controller.post_transmit(now, segment_len);
 
             if !self.timer.is_retransmit() {
                 // RFC 6298 (5.1) Every time a packet containing data is sent (including a
@@ -8972,6 +8987,95 @@ mod test {
                 ..RECV_TEMPL
             }]
         );
+    }
+
+    #[test]
+    fn test_zero_window_probe_carries_delayed_ack() {
+        let mut s = socket_established();
+        s.view().set_ack_delay(Some(ACK_DELAY_DEFAULT));
+        s.view().send_slice(b"abcdef123456!@#$%^").unwrap();
+        send!(
+            s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                window_len: 0,
+                ..SEND_TEMPL
+            }
+        );
+
+        // Data arrives shortly before the probe is due, so its ACK is delayed.
+        send!(
+            s,
+            time 995,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                window_len: 0,
+                payload: &b"xyz"[..],
+                ..SEND_TEMPL
+            }
+        );
+        recv_nothing!(s, time 999);
+
+        // The probe carries the ACK, so none follows it.
+        recv!(
+            s,
+            time 1000,
+            [TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1 + 3),
+                window_len: 61,
+                payload: &b"a"[..],
+                ..RECV_TEMPL
+            }]
+        );
+        recv_nothing!(s, time 1010);
+        assert_eq!(s.deadline, Instant::from_millis(3000));
+    }
+
+    #[test]
+    fn test_zero_window_probe_delayed_ack_due_together() {
+        let mut s = socket_established();
+        s.view().set_ack_delay(Some(ACK_DELAY_DEFAULT));
+        s.view().send_slice(b"abcdef123456!@#$%^").unwrap();
+        send!(
+            s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                window_len: 0,
+                ..SEND_TEMPL
+            }
+        );
+
+        // The delayed ACK expires at the same time as the probe.
+        send!(
+            s,
+            time 990,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                window_len: 0,
+                payload: &b"xyz"[..],
+                ..SEND_TEMPL
+            }
+        );
+        recv_nothing!(s, time 999);
+
+        // One segment goes out: the probe, carrying the ACK.
+        recv!(
+            s,
+            time 1000,
+            [TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1 + 3),
+                window_len: 61,
+                payload: &b"a"[..],
+                ..RECV_TEMPL
+            }]
+        );
+        recv_nothing!(s, time 1010);
     }
 
     #[test]
