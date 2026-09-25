@@ -513,6 +513,9 @@ pub(crate) struct TcpSocketState<'d> {
     /// The remote window size, relative to local_seq_no
     /// I.e. we're allowed to send octets until local_seq_no+remote_win_len
     remote_win_len: usize,
+    /// The largest remote window ever received (MAX.SND.WND of RFC 5961).
+    /// An ACK further than this below local_seq_no is not acceptable.
+    remote_max_win_len: usize,
     /// The receive window scaling factor for remotes which support RFC 1323, None if unsupported.
     remote_win_scale: Option<u8>,
     /// Whether or not the remote supports selective ACK as described in RFC 2018.
@@ -624,6 +627,7 @@ impl<'d> TcpSocketState<'d> {
             remote_last_ack: None,
             remote_last_win: 0,
             remote_win_len: 0,
+            remote_max_win_len: 0,
             remote_win_shift: rx_cap_log2.saturating_sub(16) as u8,
             remote_win_scale: None,
             #[cfg(feature = "tcp-sack")]
@@ -725,6 +729,7 @@ impl<'d> TcpSocketState<'d> {
         self.remote_last_ack = None;
         self.remote_last_win = 0;
         self.remote_win_len = 0;
+        self.remote_max_win_len = 0;
         self.remote_win_scale = None;
         #[cfg(feature = "tcp-sack")]
         {
@@ -970,6 +975,7 @@ impl<'d> TcpSocketState<'d> {
         let control_len = (sent_syn as usize) + (sent_fin as usize);
 
         // Reject unacceptable acknowledgements.
+        let mut old_ack = false;
         match (self.state, repr.control, repr.ack_number) {
             // An RST received in response to initial SYN is acceptable if it acknowledges
             // the initial SYN.
@@ -1040,14 +1046,29 @@ impl<'d> TcpSocketState<'d> {
                     ack_min += 1;
                 }
 
-                if ack_number < ack_min {
-                    debug!("duplicate ACK ({} not in {}...{})", ack_number, ack_min, ack_max);
-                    return None;
-                }
-
                 if ack_number > ack_max {
                     debug!("unacceptable ACK ({} not in {}...{})", ack_number, ack_min, ack_max);
                     return self.challenge_ack_reply(now, repr);
+                }
+
+                if ack_number < ack_min {
+                    // RFC 5961 5.2: acceptable only if
+                    // (SND.UNA - MAX.SND.WND) <= SEG.ACK <= SND.NXT.
+                    if ack_number < ack_min - self.remote_max_win_len {
+                        debug!(
+                            "unacceptable ACK ({} more than {} below {})",
+                            ack_number, self.remote_max_win_len, ack_min
+                        );
+                        return self.challenge_ack_reply(now, repr);
+                    }
+
+                    // if the ack is old but not TOO old, we ignore the ack only,
+                    // still process the payload.
+                    debug!(
+                        "old ACK ({} not in {}...{}), ignoring the ACK",
+                        ack_number, ack_min, ack_max
+                    );
+                    old_ack = true;
                 }
             }
         }
@@ -1344,17 +1365,23 @@ impl<'d> TcpSocketState<'d> {
         // Update remote state.
         self.remote_last_ts = Some(now);
 
-        // RFC 1323: The window field (SEG.WND) in the header of every incoming segment, with the
-        // exception of SYN segments, is left-shifted by Snd.Wind.Scale bits before updating SND.WND.
-        let scale = match repr.control {
-            TcpControl::Syn => 0,
-            _ => self.remote_win_scale.unwrap_or(0),
-        };
-        let new_remote_win_len = (repr.window_len as usize) << (scale as usize);
-        let is_window_update = new_remote_win_len != self.remote_win_len;
-        self.remote_win_len = new_remote_win_len;
+        // RFC 9293 3.10.7.4: the send window is updated only if
+        // SND.UNA <= SEG.ACK <= SND.NXT, so an old ACK leaves it alone.
+        let mut is_window_update = false;
+        if !old_ack {
+            // RFC 1323: The window field (SEG.WND) in the header of every incoming segment, with the
+            // exception of SYN segments, is left-shifted by Snd.Wind.Scale bits before updating SND.WND.
+            let scale = match repr.control {
+                TcpControl::Syn => 0,
+                _ => self.remote_win_scale.unwrap_or(0),
+            };
+            let new_remote_win_len = (repr.window_len as usize) << (scale as usize);
+            is_window_update = new_remote_win_len != self.remote_win_len;
+            self.remote_win_len = new_remote_win_len;
+            self.remote_max_win_len = self.remote_max_win_len.max(new_remote_win_len);
 
-        self.congestion_controller.set_remote_window(new_remote_win_len);
+            self.congestion_controller.set_remote_window(new_remote_win_len);
+        }
 
         if ack_len > 0 {
             // Dequeue acknowledged octets.
@@ -1371,7 +1398,10 @@ impl<'d> TcpSocketState<'d> {
             self.tx_waker.wake();
         }
 
-        if let Some(ack_number) = repr.ack_number {
+        // An old ACK is not a duplicate ACK either (RFC 5681 2: a duplicate
+        // acknowledges exactly the greatest ACK received so far), so it
+        // neither counts towards fast retransmit nor resets the count.
+        if !old_ack && let Some(ack_number) = repr.ack_number {
             // TODO: When flow control is implemented,
             // refractor the following block within that implementation
 
@@ -3168,6 +3198,7 @@ mod test {
             assert_eq!(s1.remote_last_ack, s2.remote_last_ack, "remote_last_ack");
             assert_eq!(s1.remote_last_win, s2.remote_last_win, "remote_last_win");
             assert_eq!(s1.remote_win_len, s2.remote_win_len, "remote_win_len");
+            assert_eq!(s1.remote_max_win_len, s2.remote_max_win_len, "remote_max_win_len");
             assert_eq!(s1.timer, s2.timer, "timer");
         }};
     }
@@ -3214,6 +3245,7 @@ mod test {
         s.remote_seq_no = REMOTE_SEQ + 1;
         s.remote_last_seq = LOCAL_SEQ;
         s.remote_win_len = 256;
+        s.remote_max_win_len = 256;
         s
     }
 
@@ -5515,7 +5547,8 @@ mod test {
     #[test]
     fn test_established_bad_ack() {
         let mut s = socket_established();
-        // Already acknowledged data.
+        // Already acknowledged data: an old ACK, which is ignored. The segment
+        // carries nothing else, so nothing is sent.
         send!(
             s,
             TcpRepr {
@@ -5540,6 +5573,188 @@ mod test {
             })
         );
         assert_eq!(s.local_seq_no, LOCAL_SEQ + 1);
+    }
+
+    // RFC 9293 3.10.7.4: an ACK below SND.UNA is ignored, but the segment
+    // carrying it is processed. Reordering under bidirectional traffic makes
+    // this common: a data segment the peer sent first arrives after the ACK
+    // it sent later.
+    #[test]
+    fn test_established_old_ack_delivers_data() {
+        let mut s = socket_established();
+        s.view().send_slice(b"abc").unwrap();
+        recv!(
+            s,
+            [TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1),
+                payload: &b"abc"[..],
+                ..RECV_TEMPL
+            }]
+        );
+        // The peer's ACK of our data arrives first.
+        send!(
+            s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1 + 3),
+                ..SEND_TEMPL
+            }
+        );
+        assert_eq!(s.local_seq_no, LOCAL_SEQ + 1 + 3);
+        // Then the data segment the peer sent before it. It acknowledges less
+        // than SND.UNA and advertises an older window.
+        send!(
+            s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                window_len: 128,
+                payload: &b"abcdef"[..],
+                ..SEND_TEMPL
+            }
+        );
+        // Its payload is delivered and acknowledged.
+        recv!(
+            s,
+            [TcpRepr {
+                seq_number: LOCAL_SEQ + 1 + 3,
+                ack_number: Some(REMOTE_SEQ + 1 + 6),
+                window_len: 58,
+                ..RECV_TEMPL
+            }]
+        );
+        s.view()
+            .recv(|data| {
+                assert_eq!(data, b"abcdef");
+                (6, ())
+            })
+            .unwrap();
+        // The old ACK moved neither SND.UNA nor the send window.
+        assert_eq!(s.local_seq_no, LOCAL_SEQ + 1 + 3);
+        assert_eq!(s.remote_win_len, 256);
+    }
+
+    // RFC 5961 5.2: an ACK more than MAX.SND.WND below SND.UNA discards the
+    // segment, payload included, and gets a rate-limited challenge ACK.
+    #[test]
+    fn test_established_ack_below_max_window_challenge_ack() {
+        let mut s = socket_established();
+        assert_eq!(s.remote_max_win_len, 256);
+        send!(
+            s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1 - 257),
+                payload: &b"abcdef"[..],
+                ..SEND_TEMPL
+            },
+            Some(TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1),
+                ..RECV_TEMPL
+            })
+        );
+        // Nothing was delivered, and nothing else is sent.
+        assert!(!s.view().can_recv());
+        assert_eq!(s.remote_seq_no, REMOTE_SEQ + 1);
+        recv_nothing!(s);
+
+        // Challenge ACKs are rate-limited.
+        send!(
+            s,
+            time 100,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1 - 257),
+                payload: &b"abcdef"[..],
+                ..SEND_TEMPL
+            }
+        );
+        assert!(!s.view().can_recv());
+        recv_nothing!(s, time 100);
+
+        // Exactly MAX.SND.WND below SND.UNA is still acceptable.
+        send!(
+            s,
+            time 200,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1 - 256),
+                payload: &b"abcdef"[..],
+                ..SEND_TEMPL
+            }
+        );
+        recv!(
+            s,
+            time 200,
+            [TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1 + 6),
+                window_len: 58,
+                ..RECV_TEMPL
+            }]
+        );
+        s.view()
+            .recv(|data| {
+                assert_eq!(data, b"abcdef");
+                (6, ())
+            })
+            .unwrap();
+        assert_eq!(s.local_seq_no, LOCAL_SEQ + 1);
+    }
+
+    // MAX.SND.WND is the largest window the peer ever advertised, not the
+    // current one: a window that has since shrunk does not narrow the range.
+    #[test]
+    fn test_established_max_window_tracks_largest() {
+        let mut s = socket_established();
+        send!(
+            s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                window_len: 1000,
+                ..SEND_TEMPL
+            }
+        );
+        assert_eq!(s.remote_max_win_len, 1000);
+        send!(
+            s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                window_len: 10,
+                ..SEND_TEMPL
+            }
+        );
+        assert_eq!(s.remote_win_len, 10);
+        assert_eq!(s.remote_max_win_len, 1000);
+        // 1000 below SND.UNA is still within MAX.SND.WND: an old ACK, ignored.
+        send!(
+            s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1 - 1000),
+                ..SEND_TEMPL
+            }
+        );
+        assert_eq!(s.local_seq_no, LOCAL_SEQ + 1);
+        assert_eq!(s.remote_win_len, 10);
+        // 1001 below is not.
+        send!(
+            s,
+            TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1 - 1001),
+                ..SEND_TEMPL
+            },
+            Some(TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1),
+                ..RECV_TEMPL
+            })
+        );
     }
 
     #[test]
@@ -7839,6 +8054,70 @@ mod test {
             u8::MAX,
             "duplicate ACK count should not overflow but saturate"
         );
+    }
+
+    // An old ACK is not a duplicate ACK (RFC 5681 2: a duplicate acknowledges
+    // exactly the greatest ACK received so far), so it neither counts towards
+    // fast retransmit nor resets the count.
+    #[test]
+    fn test_fast_retransmit_old_ack_not_counted() {
+        let mut s = socket_established();
+        s.remote_mss = 3;
+
+        s.view().send_slice(b"aaaBBB").unwrap();
+        recv!(s, time 0, [TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"aaa"[..],
+            ..RECV_TEMPL
+        }, TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 3,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"BBB"[..],
+            ..RECV_TEMPL
+        }]);
+        send!(s, time 10, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1 + 3),
+            ..SEND_TEMPL
+        });
+        assert_eq!(s.local_seq_no, LOCAL_SEQ + 1 + 3);
+
+        // "BBB" is lost, so the peer keeps acknowledging "aaa".
+        send!(s, time 20, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1 + 3),
+            ..SEND_TEMPL
+        });
+        send!(s, time 25, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1 + 3),
+            ..SEND_TEMPL
+        });
+        assert_eq!(s.local_rx_dup_acks, 2);
+
+        // A reordered old ACK in between is not a duplicate ACK.
+        send!(s, time 30, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1),
+            ..SEND_TEMPL
+        });
+        assert_eq!(s.local_rx_dup_acks, 2);
+        assert_eq!(s.local_rx_last_ack, Some(LOCAL_SEQ + 1 + 3));
+
+        // The third duplicate triggers fast retransmit.
+        send!(s, time 35, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1 + 3),
+            ..SEND_TEMPL
+        });
+        assert_eq!(s.local_rx_dup_acks, 3);
+        recv!(s, time 40, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 3,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"BBB"[..],
+            ..RECV_TEMPL
+        }));
     }
 
     #[test]

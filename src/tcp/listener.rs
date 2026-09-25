@@ -248,6 +248,7 @@ impl AcceptToken {
             s.remote_win_shift = 0;
         }
         s.remote_win_len = syn.remote_win_len;
+        s.remote_max_win_len = syn.remote_win_len;
         s.remote_mss = syn.remote_mss;
         s.congestion_controller.set_mss(syn.remote_mss);
         // Answer with timestamps only if the SYN offered them.
