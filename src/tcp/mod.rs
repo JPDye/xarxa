@@ -12,6 +12,7 @@ use crate::config::TCP_LISTENER_BACKLOG;
 use crate::config::TCP_SOCKET_COUNT;
 use crate::driver::ChecksumCapabilities;
 use crate::driver::PacketBuf;
+use crate::driver::config::PACKET_BUF_SIZE;
 #[cfg(feature = "icmp-errors")]
 use crate::error::IcmpError;
 use crate::error::InvalidHopLimit;
@@ -53,7 +54,12 @@ use crate::storage::Assembler;
 ///
 /// Every `dispatch` refreshes the socket's `ip_mtu` from the routed egress interface
 /// before sizing or sending anything, so this only stands in while there is no route.
-const DEFAULT_IP_MTU: usize = 1500;
+/// Capped by the packet buffer, so a segment sized by it always fits one.
+const DEFAULT_IP_MTU: usize = if PACKET_BUF_SIZE - LINK_HEADER_LEN < 1500 {
+    PACKET_BUF_SIZE - LINK_HEADER_LEN
+} else {
+    1500
+};
 
 define_handle! {
     /// A handle to a TCP socket added to a [`Stack`].

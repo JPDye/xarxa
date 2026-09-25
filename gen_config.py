@@ -8,15 +8,16 @@ features = []
 driver_features = []
 
 
-def _feature(into, name, default, min, max, pow2=None):
-    vals = set()
-    val = min
-    while val <= max:
-        vals.add(val)
-        if pow2 == True or (isinstance(pow2, int) and val >= pow2):
-            val *= 2
-        else:
-            val += 1
+def _feature(into, name, default, min=None, max=None, pow2=None, vals=None):
+    vals = set(vals or [])
+    if min is not None:
+        val = min
+        while val <= max:
+            vals.add(val)
+            if pow2 == True or (isinstance(pow2, int) and val >= pow2):
+                val *= 2
+            else:
+                val += 1
     vals.add(default)
 
     into.append(
@@ -28,16 +29,23 @@ def _feature(into, name, default, min, max, pow2=None):
     )
 
 
-def feature(name, default, min, max, pow2=None):
-    _feature(features, name, default, min, max, pow2)
+def feature(name, default, min=None, max=None, pow2=None, vals=None):
+    _feature(features, name, default, min, max, pow2, vals)
 
 
-def driver_feature(name, default, min, max, pow2=None):
-    _feature(driver_features, name, default, min, max, pow2)
+def driver_feature(name, default, min=None, max=None, pow2=None, vals=None):
+    _feature(driver_features, name, default, min, max, pow2, vals)
 
 
 # Packet pool. Lives in `xarxa-driver`; `xarxa` forwards these features there.
 driver_feature("packet_buf_count", default=16, min=1, max=4096, pow2=8)
+# Buffer size: 802.15.4 frames, the IPv4 and IPv6 minimums plus an Ethernet
+# header, Ethernet with and without VLAN tags, and jumbo frames.
+driver_feature(
+    "packet_buf_size",
+    default=1514,
+    vals=[128, 256, 512, 590, 1024, 1294, 1514, 1518, 1522, 1536, 2048, 4096, 8192, 9018, 9022, 9216, 16384],
+)
 
 # Interfaces and tables (only bounded without `alloc`).
 feature("iface_count", default=2, min=1, max=8)

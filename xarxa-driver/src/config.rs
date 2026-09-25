@@ -55,8 +55,29 @@ pub const PACKET_BUF_ALIGN: usize = cfg_select! {
 /// Size of the buffer in a [`PacketBuf`](crate::PacketBuf), in bytes.
 ///
 /// This is the largest frame that can be sent or received, headers included.
+/// It also caps the MTU of every interface.
 ///
-/// Not configurable yet: it is 1514 (the largest Ethernet frame without the FCS)
-/// rounded up to a multiple of [`PACKET_BUF_ALIGN`].
-// TODO: make configurable
-pub const PACKET_BUF_SIZE: usize = 1514usize.next_multiple_of(PACKET_BUF_ALIGN);
+/// The configured value is rounded up to a multiple of [`PACKET_BUF_ALIGN`].
+///
+/// Pick it for the largest frame your links carry:
+/// - 1514 for Ethernet. 1518 or 1522 with one or two VLAN tags.
+/// - 9018 or so for Ethernet with jumbo frames.
+/// - 128 or 256 for IEEE 802.15.4 without 6LoWPAN fragmentation. 256 leaves
+///   room for the headers to grow when they are decompressed.
+///
+/// Going below the protocol minimums works, but breaks interoperability:
+/// - IPv6 needs 1280 bytes plus the link header (RFC 8200).
+/// - IPv4 hosts must accept 576 bytes plus the link header (RFC 791).
+///
+/// Must be between 128 and 65535.
+///
+/// Default: 1514.
+pub const PACKET_BUF_SIZE: usize = raw::PACKET_BUF_SIZE.next_multiple_of(PACKET_BUF_ALIGN);
+
+// `headroom` and `len` are `u16`.
+const _: () = assert!(
+    PACKET_BUF_SIZE <= u16::MAX as usize,
+    "PACKET_BUF_SIZE must be at most 65535"
+);
+// Room for the largest headers the stack writes in front of a payload.
+const _: () = assert!(PACKET_BUF_SIZE >= 128, "PACKET_BUF_SIZE must be at least 128");

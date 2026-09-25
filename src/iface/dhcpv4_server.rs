@@ -33,6 +33,12 @@ use crate::wire::{
     Ipv4Cidr, LINK_HEADER_LEN, UDP_HEADER_LEN, UdpPacket, dhcpv4_field as field,
 };
 
+// DHCP messages can be up to 576 bytes long, the IPv4 minimum MTU (RFC 2131 §2).
+const _: () = core::assert!(
+    crate::driver::config::PACKET_BUF_SIZE >= LINK_HEADER_LEN + crate::wire::IPV4_MIN_MTU,
+    "DHCP needs PACKET_BUF_SIZE of at least 590 (576 with only `medium-ip`)"
+);
+
 /// How long an offered address is held back for the client it was offered to.
 const OFFER_TIMEOUT: Duration = Duration::from_secs(60);
 

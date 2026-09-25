@@ -465,20 +465,14 @@ impl RawSocket<'_, '_> {
     /// buffer, and returns how many bytes it wrote. The packet is then sent
     /// immediately.
     ///
-    /// The packet must be complete, headers included: a whole Ethernet frame (at
-    /// most 1514 octets) in Ethernet mode, a whole IP packet (at most 1500 octets,
-    /// or the full 1514 in a build without `medium-ethernet`, which reserves no
-    /// link-layer headroom) in IP mode. It is emitted exactly as written, so the
-    /// user is responsible for every header field, including the IPv4 header
-    /// checksum.
+    /// The packet must be complete, headers included:
     ///
-    /// In Ethernet mode the frame is transmitted as-is, on the bound interface
-    /// if the socket is bound to one, else on the first Ethernet interface. In
-    /// IP mode the destination address is read from the IP header, and the
-    /// packet is routed like any other egress packet (through the bound
-    /// interface only, if the socket is bound to one). If the destination's
-    /// neighbor is unresolved, the packet is queued inside the stack and sent
-    /// when resolution completes. This still counts as a successful send.
+    /// - In Ethernet mode, a whole Ethernet frame (including header, not including FCS). It
+    ///   is transmitted as-is, on the bound interface if the socket is bound to
+    ///   one, else on the first Ethernet interface.
+    /// - In IP mode, a whole IP packet, with checksum calculated. The destination
+    ///   address is read from the IP header, and the packet is routed like any
+    ///   other egress packet (through the bound interface only, if the socket is bound to one).
     ///
     /// # Errors
     /// - `InvalidState`: if the socket is not bound.
@@ -1286,7 +1280,10 @@ mod test {
         assert_eq!(stack.raw_socket(handle).send_slice(&v6), Err(SendError::Malformed));
         // Too big for a packet buffer (IP mode leaves room for the Ethernet header).
         assert_eq!(
-            stack.raw_socket(handle).send_with(1503, |_| unreachable!()),
+            stack.raw_socket(handle).send_with(
+                crate::driver::config::PACKET_BUF_SIZE - LINK_HEADER_LEN + 1,
+                |_| unreachable!()
+            ),
             Err(SendError::BufferFull)
         );
         assert_eq!(tx.borrow().len(), 1);

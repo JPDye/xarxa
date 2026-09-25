@@ -2742,9 +2742,13 @@ fn build_icmpv4_error(
     msg_code: u8,
     checksum_caps: &ChecksumCapabilities,
 ) -> Option<PacketBuf> {
-    let quote_len = orig.len().min(IPV4_MIN_MTU - IPV4_HEADER_LEN - ICMP_ERROR_HEADER_LEN);
     let mut reply = PacketBuf::try_new()?;
     reply.reserve(LINK_HEADER_LEN + IPV4_HEADER_LEN);
+    // A buffer smaller than the minimum MTU quotes less.
+    let quote_len = orig
+        .len()
+        .min(IPV4_MIN_MTU - IPV4_HEADER_LEN - ICMP_ERROR_HEADER_LEN)
+        .min(reply.tailroom() - ICMP_ERROR_HEADER_LEN);
     reply.set_len(ICMP_ERROR_HEADER_LEN + quote_len);
     {
         let mut icmp = Icmpv4Packet::new_unchecked(&mut reply);
@@ -2775,9 +2779,13 @@ fn build_icmpv6_error(
     pointer: u32,
     checksum_caps: &ChecksumCapabilities,
 ) -> Option<PacketBuf> {
-    let quote_len = orig.len().min(IPV6_MIN_MTU - IPV6_HEADER_LEN - ICMP_ERROR_HEADER_LEN);
     let mut reply = PacketBuf::try_new()?;
     reply.reserve(LINK_HEADER_LEN + IPV6_HEADER_LEN);
+    // A buffer smaller than the minimum MTU quotes less.
+    let quote_len = orig
+        .len()
+        .min(IPV6_MIN_MTU - IPV6_HEADER_LEN - ICMP_ERROR_HEADER_LEN)
+        .min(reply.tailroom() - ICMP_ERROR_HEADER_LEN);
     reply.set_len(ICMP_ERROR_HEADER_LEN + quote_len);
     {
         let mut icmp = Icmpv6Packet::new_unchecked(&mut reply);
