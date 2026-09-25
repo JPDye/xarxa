@@ -245,12 +245,6 @@ pub(crate) struct EgressRoute {
 }
 
 impl TxContext<'_, '_> {
-    /// The current time, as last set by [`Stack::poll`].
-    #[cfg(feature = "tcp")]
-    pub(crate) fn now(&self) -> Instant {
-        self.inner.now
-    }
-
     /// The stack's PRNG.
     #[cfg(any(feature = "udp", feature = "tcp"))]
     pub(crate) fn rand(&mut self) -> &mut Rand {
@@ -1108,13 +1102,7 @@ impl<'d> Stack<'d> {
                 ifaces: &mut self.ifaces,
             };
             for (_, socket) in self.sockets.tcp.iter_mut() {
-                // If egress failed due to device busy or full packet pool,
-                // avoid endless poll loops.
-                let socket_deadline = match crate::tcp::flush(socket, &mut cx) {
-                    Ok(()) => socket.poll_at(),
-                    Err(crate::tcp::Blocked) => socket.poll_at_blocked(),
-                };
-                clock.schedule(socket_deadline);
+                let _ = socket.dispatch(&mut cx, &mut clock, crate::tcp::transmit);
             }
         }
 
@@ -5281,6 +5269,41 @@ pub(crate) mod test {
         assert!(deadline > Instant::from_secs(5) && deadline < Instant::MAX);
         assert_eq!(stack.poll(Instant::from_secs(5)), deadline);
         assert_eq!(tx.borrow().len(), 1);
+    }
+
+    /// A connection that times out while the device is full closes, and doesn't
+    /// keep asking to be polled while its RST waits for room.
+    #[test]
+    #[cfg(all(feature = "medium-ethernet", feature = "ipv4", feature = "tcp"))]
+    fn test_device_full_tcp_timeout_does_not_busy_poll() {
+        let (mut stack, rx, tx, room) = test_stack_with_room(Medium::Ethernet);
+        let remote_hw = EthernetAddress([0x02, 0, 0, 0, 0, 0x02]);
+        inject(&mut stack, &rx, arp_request_from(remote_hw, REMOTE_V4));
+        tx.borrow_mut().clear();
+
+        let handle = stack
+            .add_tcp_socket_with_bufs(vec![0; 4096].leak(), vec![0; 4096].leak())
+            .unwrap();
+        stack.tcp_socket(handle).set_timeout(Some(Duration::from_secs(10)));
+        stack.tcp_socket(handle).connect((REMOTE_V4, 80), 0).unwrap();
+
+        // The SYN is held back, and the timeout is the only deadline.
+        room.set(Some(0));
+        assert_eq!(stack.poll(Instant::ZERO), Instant::from_secs(10));
+
+        // It fires: the connection is aborted, and nothing is due until the
+        // device has room.
+        let now = Instant::from_secs(10);
+        stack.poll(now);
+        assert_eq!(stack.tcp_socket(handle).state(), TcpState::Closed);
+        assert_eq!(stack.poll(now), Instant::MAX);
+        assert!(tx.borrow().is_empty());
+
+        // With room, the RST goes out, and the socket forgets the connection.
+        room.set(Some(1));
+        assert_eq!(stack.poll(now), Instant::MAX);
+        assert_eq!(tx.borrow().len(), 1);
+        assert_eq!(stack.tcp_socket(handle).remote_addr(), None);
     }
 
     #[test]

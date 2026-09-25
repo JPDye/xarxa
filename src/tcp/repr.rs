@@ -270,15 +270,6 @@ impl<'a> TcpRepr<'a> {
     pub const fn segment_len(&self) -> usize {
         self.payload_len() + self.control.len()
     }
-
-    /// Return whether the segment has no flags set (except PSH) and no data.
-    pub const fn is_empty(&self) -> bool {
-        match self.control {
-            _ if self.payload_len() != 0 => false,
-            TcpControl::Syn | TcpControl::Fin | TcpControl::Rst => false,
-            TcpControl::None | TcpControl::Psh => true,
-        }
-    }
 }
 
 impl<'a> fmt::Display for TcpRepr<'a> {
